@@ -1,0 +1,195 @@
+import json
+import os
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtNetwork import QNetworkProxy  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from home_ai_cluster_desktop import app as desktop  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def qt_app():
+    application = QApplication.instance() or QApplication([])
+    application.setQuitOnLastWindowClosed(False)
+    yield application
+
+
+@pytest.fixture
+def server():
+    received = []
+    gate = threading.Event()
+    plan = {
+        "status": 200,
+        "body": b'{"content":"Hello"}',
+        "wait": False,
+        "completed": 0,
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            size = int(self.headers["Content-Length"])
+            received.append((self.path, json.loads(self.rfile.read(size))))
+            if plan["wait"]:
+                gate.wait(3)
+            self.send_response(plan["status"])
+            if plan["status"] == 302:
+                self.send_header("Location", "/redirect-target")
+            self.end_headers()
+            try:
+                self.wfile.write(plan["body"])
+            except BrokenPipeError:
+                pass
+            plan["completed"] += 1
+
+        def log_message(self, *_args):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield httpd, received, plan, gate
+    gate.set()
+    httpd.shutdown()
+    thread.join()
+    httpd.server_close()
+
+
+def until(qt_app, condition, seconds=2):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        if condition():
+            return
+        time.sleep(0.01)
+    raise AssertionError("Qt condition did not occur")
+
+
+def window_for(monkeypatch, qt_app, server, timeout=120):
+    httpd, *_ = server
+    monkeypatch.setattr(
+        desktop, "CHAT_URL", f"http://127.0.0.1:{httpd.server_port}/v1/chat"
+    )
+    window = desktop.ChatWindow(timeout)
+    window.show()
+    return window
+
+
+def send(window, message):
+    window.input.setPlainText(message)
+    window.send_button.click()
+
+
+def test_timeout_option():
+    assert desktop.parse_args([]).timeout_seconds == 120
+    for value in ("1", "300", "3600"):
+        assert desktop.parse_args(["--timeout-seconds", value]).timeout_seconds == int(
+            value
+        )
+    for value in ("0", "3601", "1.5", "bad"):
+        with pytest.raises(SystemExit):
+            desktop.parse_args(["--timeout-seconds", value])
+
+
+def test_two_independent_sends_and_whitespace(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, _, _ = server
+    send(window, "   \n")
+    assert received == []
+    send(window, "First")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    assert "Home AI Cluster: Hello" in window.conversation.toPlainText()
+    send(window, "Second")
+    until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
+    assert received == [
+        (
+            "/v1/chat",
+            {"messages": [{"role": "user", "content": "First"}], "capability": "chat"},
+        ),
+        (
+            "/v1/chat",
+            {"messages": [{"role": "user", "content": "Second"}], "capability": "chat"},
+        ),
+    ]
+    window.close()
+
+
+def test_one_request_at_a_time_and_late_reply(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server, timeout=1)
+    _, received, plan, gate = server
+    plan["wait"] = True
+    send(window, "Slow")
+    until(qt_app, lambda: len(received) == 1)
+    assert not window.send_button.isEnabled()
+    window.send()  # Even a direct invocation cannot queue work.
+    assert len(received) == 1
+    until(qt_app, lambda: window.send_button.isEnabled(), seconds=2)
+    assert "The request timed out." in window.conversation.toPlainText()
+    plan["wait"] = False
+    send(window, "New")
+    until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
+    gate.set()
+    until(qt_app, lambda: plan["completed"] == 2)
+    for _ in range(20):
+        qt_app.processEvents()
+        time.sleep(0.01)
+    assert window.conversation.toPlainText().count("Home AI Cluster: Hello") == 1
+    window.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (200, b"bad json", "Home AI Cluster returned an invalid response."),
+        (200, b"{}", "Home AI Cluster returned an invalid response."),
+        (200, b'{"content":42}', "Home AI Cluster returned an invalid response."),
+        (500, b"private details", "Home AI Cluster could not complete the request."),
+        (302, b"", "Home AI Cluster could not complete the request."),
+    ],
+)
+def test_bounded_failures(monkeypatch, qt_app, server, status, body, expected):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, _ = server
+    plan.update(status=status, body=body)
+    send(window, "Test")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    assert expected in window.conversation.toPlainText()
+    assert len(received) == 1  # A redirect target was not requested.
+    assert "private details" not in window.conversation.toPlainText()
+    if status == 500:
+        plan.update(status=200, body=b'{"content":"Recovered"}')
+        send(window, "Try again")
+        until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
+        assert "Home AI Cluster: Recovered" in window.conversation.toPlainText()
+    window.close()
+
+
+def test_bypasses_application_proxy(monkeypatch, qt_app, server):
+    QNetworkProxy.setApplicationProxy(
+        QNetworkProxy(QNetworkProxy.ProxyType.HttpProxy, "127.0.0.1", 1)
+    )
+    try:
+        window = window_for(monkeypatch, qt_app, server)
+        _, received, _, _ = server
+        send(window, "Direct")
+        until(qt_app, lambda: window.send_button.isEnabled())
+        assert len(received) == 1
+        assert "Home AI Cluster: Hello" in window.conversation.toPlainText()
+        window.close()
+    finally:
+        QNetworkProxy.setApplicationProxy(QNetworkProxy())
+
+
+def test_connection_failure_is_bounded(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    monkeypatch.setattr(desktop, "CHAT_URL", "http://127.0.0.1:1/v1/chat")
+    send(window, "Unavailable")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    assert "Home AI Cluster is unavailable." in window.conversation.toPlainText()
+    window.close()
