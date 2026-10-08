@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkProxy,
@@ -13,6 +13,7 @@ from PySide6.QtNetwork import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QLabel,
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
@@ -67,12 +68,16 @@ class ChatWindow(QMainWindow):
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Message")
         self.input.setFixedHeight(100)
+        self.input.installEventFilter(self)
         self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self.send)
+        self.waiting_label = QLabel("Waiting…")
+        self.waiting_label.setVisible(False)
 
         layout = QVBoxLayout()
         layout.addWidget(self.conversation)
         layout.addWidget(self.input)
+        layout.addWidget(self.waiting_label)
         layout.addWidget(self.send_button)
         central = QWidget()
         central.setLayout(layout)
@@ -85,6 +90,30 @@ class ChatWindow(QMainWindow):
         self._timer.setSingleShot(True)
         self._timer.setInterval(timeout * 1000)
         self._timer.timeout.connect(self._timed_out)
+
+    def eventFilter(self, watched, event):
+        if (
+            watched is self.input
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+        ):
+            self.send()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _append_conversation(self, message: str) -> None:
+        self.conversation.appendPlainText(message)
+        scrollbar = self.conversation.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _set_awaiting(self, awaiting: bool) -> None:
+        self.send_button.setEnabled(not awaiting)
+        self.waiting_label.setVisible(awaiting)
+
+    def _complete_interaction(self) -> None:
+        self._set_awaiting(False)
+        self.input.setFocus()
 
     def send(self) -> None:
         if self._reply is not None:
@@ -104,21 +133,21 @@ class ChatWindow(QMainWindow):
         payload = json.dumps(
             {"messages": [{"role": "user", "content": message}], "capability": "chat"}
         ).encode("utf-8")
+        self._append_conversation(f"You: {message}")
+        self.input.clear()
         reply = self._network.post(request, payload)
         self._reply = reply
         reply.finished.connect(self._finished)
         self._timer.start()
-        self.send_button.setEnabled(False)
-        self.input.clear()
-        self.conversation.appendPlainText(f"You: {message}")
+        self._set_awaiting(True)
 
     def _timed_out(self) -> None:
         if self._reply is None:
             return
         # The reply may finish later. Its completion must not affect this window.
         self._reply = None
-        self.send_button.setEnabled(True)
-        self.conversation.appendPlainText("The request timed out.")
+        self._append_conversation("The request timed out.")
+        self._complete_interaction()
 
     def _finished(self) -> None:
         reply = self.sender()
@@ -129,7 +158,6 @@ class ChatWindow(QMainWindow):
             return
         self._reply = None
         self._timer.stop()
-        self.send_button.setEnabled(True)
         status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
         if status is None:
             message = "Home AI Cluster is unavailable."
@@ -145,7 +173,8 @@ class ChatWindow(QMainWindow):
                 message = "Home AI Cluster returned an invalid response."
             else:
                 message = f"Home AI Cluster: {content}"
-        self.conversation.appendPlainText(message)
+        self._append_conversation(message)
+        self._complete_interaction()
         reply.deleteLater()
 
 
