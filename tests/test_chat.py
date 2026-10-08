@@ -13,6 +13,18 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from home_ai_cluster_desktop import app as desktop  # noqa: E402
 
+# Attribution is included only to satisfy the native result shape.
+VALID_RESULT = {
+    "content": "Hello",
+    "adapter": "fixture-adapter",
+    "model": None,
+    "node_id": "fixture-node",
+}
+
+
+def result_body(**changes):
+    return json.dumps({**VALID_RESULT, **changes}).encode()
+
 
 @pytest.fixture(scope="session")
 def qt_app():
@@ -27,7 +39,7 @@ def server():
     gate = threading.Event()
     plan = {
         "status": 200,
-        "body": b'{"content":"Hello"}',
+        "body": result_body(),
         "wait": False,
         "completed": 0,
     }
@@ -147,8 +159,28 @@ def test_one_request_at_a_time_and_late_reply(monkeypatch, qt_app, server):
     ("status", "body", "expected"),
     [
         (200, b"bad json", "Home AI Cluster returned an invalid response."),
-        (200, b"{}", "Home AI Cluster returned an invalid response."),
-        (200, b'{"content":42}', "Home AI Cluster returned an invalid response."),
+        (200, b"[]", "Home AI Cluster returned an invalid response."),
+        (
+            200,
+            json.dumps({"adapter": "a", "node_id": "n"}).encode(),
+            "Home AI Cluster returned an invalid response.",
+        ),
+        (200, result_body(content=42), "Home AI Cluster returned an invalid response."),
+        (
+            200,
+            json.dumps({"content": "Hello", "node_id": "n"}).encode(),
+            "Home AI Cluster returned an invalid response.",
+        ),
+        (200, result_body(adapter=""), "Home AI Cluster returned an invalid response."),
+        (200, result_body(adapter=42), "Home AI Cluster returned an invalid response."),
+        (
+            200,
+            json.dumps({"content": "Hello", "adapter": "a"}).encode(),
+            "Home AI Cluster returned an invalid response.",
+        ),
+        (200, result_body(node_id=""), "Home AI Cluster returned an invalid response."),
+        (200, result_body(node_id=42), "Home AI Cluster returned an invalid response."),
+        (200, result_body(model=42), "Home AI Cluster returned an invalid response."),
         (500, b"private details", "Home AI Cluster could not complete the request."),
         (302, b"", "Home AI Cluster could not complete the request."),
     ],
@@ -163,7 +195,7 @@ def test_bounded_failures(monkeypatch, qt_app, server, status, body, expected):
     assert len(received) == 1  # A redirect target was not requested.
     assert "private details" not in window.conversation.toPlainText()
     if status == 500:
-        plan.update(status=200, body=b'{"content":"Recovered"}')
+        plan.update(status=200, body=result_body(content="Recovered"))
         send(window, "Try again")
         until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
         assert "Home AI Cluster: Recovered" in window.conversation.toPlainText()
@@ -192,4 +224,34 @@ def test_connection_failure_is_bounded(monkeypatch, qt_app, server):
     send(window, "Unavailable")
     until(qt_app, lambda: window.send_button.isEnabled())
     assert "Home AI Cluster is unavailable." in window.conversation.toPlainText()
+    window.close()
+
+
+@pytest.mark.parametrize("model_field", [None, "absent", "example-model"])
+def test_optional_model_wire_shape(monkeypatch, qt_app, server, model_field):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    result = dict(VALID_RESULT)
+    if model_field == "absent":
+        del result["model"]
+    else:
+        result["model"] = model_field
+    plan["body"] = json.dumps(result).encode()
+    send(window, "Test")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    assert "Home AI Cluster: Hello" in window.conversation.toPlainText()
+    window.close()
+
+
+def test_bypasses_environment_proxy(monkeypatch, qt_app, server):
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, _, _ = server
+    send(window, "Direct")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    assert len(received) == 1
+    assert "Home AI Cluster: Hello" in window.conversation.toPlainText()
     window.close()

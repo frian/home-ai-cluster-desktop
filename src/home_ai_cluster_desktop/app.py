@@ -23,6 +23,23 @@ from PySide6.QtWidgets import (
 CHAT_URL = "http://127.0.0.1:25042/v1/chat"
 
 
+def chat_content(result: object) -> str:
+    """Read only the wire shape needed for a native Chat success."""
+    if not isinstance(result, dict):
+        raise ValueError("invalid native result")
+    content = result.get("content")
+    if not isinstance(content, str):
+        raise ValueError("invalid Chat content")
+    for field in ("adapter", "node_id"):
+        value = result.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError("invalid native result")
+    model = result.get("model")  # Optional in ClusterResult; absent defaults to null.
+    if model is not None and not isinstance(model, str):
+        raise ValueError("invalid native result")
+    return content
+
+
 def timeout_seconds(value: str) -> int:
     try:
         seconds = int(value)
@@ -123,10 +140,7 @@ class ChatWindow(QMainWindow):
             message = "Home AI Cluster could not complete the request."
         else:
             try:
-                result = json.loads(bytes(reply.readAll()))
-                content = result["content"]
-                if not isinstance(content, str):
-                    raise ValueError("invalid Chat content")
+                content = chat_content(json.loads(bytes(reply.readAll())))
             except (ValueError, TypeError, KeyError):
                 message = "Home AI Cluster returned an invalid response."
             else:
