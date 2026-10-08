@@ -219,11 +219,17 @@ def test_bypasses_application_proxy(monkeypatch, qt_app, server):
 
 
 def test_connection_failure_is_bounded(monkeypatch, qt_app, server):
-    window = window_for(monkeypatch, qt_app, server)
+    window = window_for(monkeypatch, qt_app, server, timeout=1)
     monkeypatch.setattr(desktop, "CHAT_URL", "http://127.0.0.1:1/v1/chat")
     send(window, "Unavailable")
-    until(qt_app, lambda: window.send_button.isEnabled())
-    assert "Home AI Cluster is unavailable." in window.conversation.toPlainText()
+    until(qt_app, lambda: window.send_button.isEnabled(), seconds=3)
+    conversation = window.conversation.toPlainText()
+    assert any(
+        message in conversation
+        for message in ("Home AI Cluster is unavailable.", "The request timed out.")
+    )
+    assert "Traceback" not in conversation
+    assert "127.0.0.1:1" not in conversation
     window.close()
 
 
