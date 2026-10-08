@@ -8,7 +8,10 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QTextCursor  # noqa: E402
 from PySide6.QtNetwork import QNetworkProxy  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from home_ai_cluster_desktop import app as desktop  # noqa: E402
@@ -98,6 +101,21 @@ def send(window, message):
     window.send_button.click()
 
 
+def test_enter_sends_and_shift_enter_inserts_newline(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, _, _ = server
+    window.input.setPlainText("First line")
+    window.input.moveCursor(QTextCursor.MoveOperation.End)
+    QTest.keyClick(window.input, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
+    assert window.input.toPlainText() == "First line\n"
+    assert received == []
+    QTest.keyClick(window.input, Qt.Key.Key_Return)
+    until(qt_app, lambda: len(received) == 1 and window.send_button.isEnabled())
+    assert received[0][1]["messages"] == [{"role": "user", "content": "First line\n"}]
+    assert window.input.toPlainText() == ""
+    window.close()
+
+
 def test_timeout_option():
     assert desktop.parse_args([]).timeout_seconds == 120
     for value in ("1", "300", "3600"):
@@ -139,10 +157,14 @@ def test_one_request_at_a_time_and_late_reply(monkeypatch, qt_app, server):
     send(window, "Slow")
     until(qt_app, lambda: len(received) == 1)
     assert not window.send_button.isEnabled()
+    assert window.waiting_label.isVisible()
+    assert window.input.toPlainText() == ""
     window.send()  # Even a direct invocation cannot queue work.
     assert len(received) == 1
     until(qt_app, lambda: window.send_button.isEnabled(), seconds=2)
     assert "The request timed out." in window.conversation.toPlainText()
+    assert not window.waiting_label.isVisible()
+    assert window.input.hasFocus()
     plan["wait"] = False
     send(window, "New")
     until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
@@ -192,6 +214,8 @@ def test_bounded_failures(monkeypatch, qt_app, server, status, body, expected):
     send(window, "Test")
     until(qt_app, lambda: window.send_button.isEnabled())
     assert expected in window.conversation.toPlainText()
+    assert not window.waiting_label.isVisible()
+    assert window.input.hasFocus()
     assert len(received) == 1  # A redirect target was not requested.
     assert "private details" not in window.conversation.toPlainText()
     if status == 500:
@@ -199,6 +223,23 @@ def test_bounded_failures(monkeypatch, qt_app, server, status, body, expected):
         send(window, "Try again")
         until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
         assert "Home AI Cluster: Recovered" in window.conversation.toPlainText()
+    window.close()
+
+
+def test_success_returns_focus_and_scrolls_to_newest_content(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    window.conversation.setPlainText(
+        "\n".join(f"Earlier {item}" for item in range(100))
+    )
+    window.conversation.verticalScrollBar().setValue(0)
+    send(window, "Newest")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    scrollbar = window.conversation.verticalScrollBar()
+    assert scrollbar.value() == scrollbar.maximum()
+    assert not window.waiting_label.isVisible()
+    assert window.input.hasFocus()
     window.close()
 
 
