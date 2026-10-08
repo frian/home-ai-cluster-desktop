@@ -24,6 +24,8 @@ jobs:
           version: "0.12.5"
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+      - name: Install Qt runtime library for headless tests
+        run: sudo apt-get update && sudo apt-get install -y libegl1
       - name: Verify locked environment
         run: |
           uv lock --check

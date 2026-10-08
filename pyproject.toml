@@ -8,6 +8,9 @@ license-files = ["LICENSE"]
 requires-python = ">=3.13,<3.15"
 dependencies = ["PySide6-Essentials>=6.10,<7"]
 
+[project.scripts]
+home-ai-cluster-desktop = "home_ai_cluster_desktop.app:main"
+
 [project.urls]
 Repository = "https://github.com/frian/home-ai-cluster-desktop"
 Issues = "https://github.com/frian/home-ai-cluster-desktop/issues"
