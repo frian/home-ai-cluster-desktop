@@ -63,7 +63,7 @@ def server():
             self.end_headers()
             try:
                 self.wfile.write(body)
-            except BrokenPipeError:
+            except (BrokenPipeError, ConnectionAbortedError):
                 pass
             plan["completed"] += 1
 
