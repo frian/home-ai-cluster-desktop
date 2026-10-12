@@ -1,4 +1,4 @@
-"""One-window client for the ordinary native Home AI Cluster Chat route."""
+"""One-window client for ordinary Chat and native capability presentation."""
 
 import argparse
 import json
@@ -13,6 +13,7 @@ from PySide6.QtNetwork import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QPlainTextEdit,
@@ -22,6 +23,35 @@ from PySide6.QtWidgets import (
 )
 
 CHAT_URL = "http://127.0.0.1:25042/v1/chat"
+CAPABILITIES_URL = "http://127.0.0.1:25042/diagnostics/caller-routable-capabilities"
+CAPABILITY_WAIT_MS = 5000
+ACCEPTED_CAPABILITY_NAMES = frozenset(
+    ("chat", "summarize", "classify", "code", "image-generation")
+)
+
+
+def capability_names(result: object) -> list[str]:
+    """Validate only the accepted native projection wire shape."""
+    if not isinstance(result, dict) or set(result) != {"capabilities"}:
+        raise ValueError("invalid capability projection")
+    names = result["capabilities"]
+    if (
+        not isinstance(names, list)
+        or any(
+            not isinstance(name, str) or name not in ACCEPTED_CAPABILITY_NAMES
+            for name in names
+        )
+        or len(names) != len(set(names))
+    ):
+        raise ValueError("invalid capability names")
+    return names
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("duplicate JSON field")
+    return result
 
 
 def chat_content(result: object) -> str:
@@ -73,8 +103,18 @@ class ChatWindow(QMainWindow):
         self.send_button.clicked.connect(self.send)
         self.waiting_label = QLabel("Waiting…")
         self.waiting_label.setVisible(False)
+        self.capabilities_label = QLabel("Available capabilities")
+        self.capabilities_value = QLabel("Capabilities unavailable")
+        self.capabilities_value.setTextFormat(Qt.TextFormat.PlainText)
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.clicked.connect(self.refresh_capabilities)
+        capability_row = QHBoxLayout()
+        capability_row.addWidget(self.capabilities_label)
+        capability_row.addWidget(self.capabilities_value, 1)
+        capability_row.addWidget(self.refresh_button)
 
         layout = QVBoxLayout()
+        layout.addLayout(capability_row)
         layout.addWidget(self.conversation)
         layout.addWidget(self.input)
         layout.addWidget(self.waiting_label)
@@ -90,6 +130,68 @@ class ChatWindow(QMainWindow):
         self._timer.setSingleShot(True)
         self._timer.setInterval(timeout * 1000)
         self._timer.timeout.connect(self._timed_out)
+        self._capability_reply: QNetworkReply | None = None
+        self._capability_timer = QTimer(self)
+        self._capability_timer.setSingleShot(True)
+        self._capability_timer.setInterval(CAPABILITY_WAIT_MS)
+        self._capability_timer.timeout.connect(self._capability_timed_out)
+        self._startup_observed = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._startup_observed:
+            self._startup_observed = True
+            self.refresh_capabilities()
+
+    def refresh_capabilities(self) -> None:
+        if self._capability_reply is not None:
+            return
+        request = QNetworkRequest(QUrl(CAPABILITIES_URL))
+        request.setAttribute(
+            QNetworkRequest.Attribute.RedirectPolicyAttribute,
+            QNetworkRequest.RedirectPolicy.ManualRedirectPolicy,
+        )
+        reply = self._network.get(request)
+        self._capability_reply = reply
+        reply.finished.connect(self._capability_finished)
+        self._capability_timer.start()
+        self.refresh_button.setEnabled(False)
+
+    def _capability_timed_out(self) -> None:
+        if self._capability_reply is None:
+            return
+        reply = self._capability_reply
+        self._capability_reply = None
+        self.capabilities_value.setText("Capabilities unavailable")
+        self.refresh_button.setEnabled(True)
+        reply.abort()
+
+    def _capability_finished(self) -> None:
+        reply = self.sender()
+        if not isinstance(reply, QNetworkReply):
+            return
+        if reply is not self._capability_reply:
+            reply.deleteLater()
+            return
+        self._capability_reply = None
+        self._capability_timer.stop()
+        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        if status == 200 and reply.error() == QNetworkReply.NetworkError.NoError:
+            try:
+                names = capability_names(
+                    json.loads(
+                        bytes(reply.readAll()), object_pairs_hook=_unique_json_object
+                    )
+                )
+            except (ValueError, TypeError):
+                presentation = "Capabilities unavailable"
+            else:
+                presentation = ", ".join(sorted(names)) if names else "None"
+        else:
+            presentation = "Capabilities unavailable"
+        self.capabilities_value.setText(presentation)
+        self.refresh_button.setEnabled(True)
+        reply.deleteLater()
 
     def eventFilter(self, watched, event):
         if (
