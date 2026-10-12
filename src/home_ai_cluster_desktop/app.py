@@ -5,6 +5,7 @@ import json
 import sys
 
 from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
+from PySide6.QtGui import QPalette
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkProxy,
@@ -13,11 +14,14 @@ from PySide6.QtNetwork import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -87,14 +91,26 @@ class ChatWindow(QMainWindow):
         self.setWindowTitle("Home AI Cluster Chat")
         self.resize(600, 500)
 
-        self.conversation = QPlainTextEdit()
-        self.conversation.setReadOnly(True)
+        self.conversation = QScrollArea()
+        self.conversation.setWidgetResizable(True)
+        self.conversation.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._conversation_contents = QWidget()
+        self._conversation_layout = QVBoxLayout(self._conversation_contents)
+        self._conversation_layout.setContentsMargins(8, 8, 8, 8)
+        self._conversation_layout.setSpacing(12)
+        self._conversation_layout.addStretch()
+        self.conversation.setWidget(self._conversation_contents)
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Message")
         self.input.setFixedHeight(100)
         self.input.installEventFilter(self)
         self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self.send)
+        self.stop_waiting_button = QPushButton("Stop waiting")
+        self.stop_waiting_button.clicked.connect(self.stop_waiting)
+        self.stop_waiting_button.setVisible(False)
         self.waiting_label = QLabel("Waiting…")
         self.waiting_label.setVisible(False)
         self.capabilities_label = QLabel("Available capabilities")
@@ -112,6 +128,7 @@ class ChatWindow(QMainWindow):
         layout.addWidget(self.conversation)
         layout.addWidget(self.input)
         layout.addWidget(self.waiting_label)
+        layout.addWidget(self.stop_waiting_button)
         layout.addWidget(self.send_button)
         central = QWidget()
         central.setLayout(layout)
@@ -198,14 +215,65 @@ class ChatWindow(QMainWindow):
             return True
         return super().eventFilter(watched, event)
 
-    def _append_conversation(self, message: str) -> None:
-        self.conversation.appendPlainText(message)
+    def _append_conversation(self, sender: str, message: str, kind: str) -> None:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        frame.setObjectName(f"chat-message-{kind}")
+        frame.setMaximumWidth(480)
+        frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        palette = frame.palette()
+        if kind == "user":
+            palette.setColor(
+                QPalette.ColorRole.Window,
+                palette.color(
+                    QPalette.ColorGroup.Active, QPalette.ColorRole.AlternateBase
+                ),
+            )
+        elif kind == "status":
+            palette.setColor(
+                QPalette.ColorRole.Window,
+                palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Midlight),
+            )
+        frame.setPalette(palette)
+        frame.setAutoFillBackground(kind != "hac")
+
+        message_layout = QVBoxLayout(frame)
+        message_layout.setContentsMargins(10, 8, 10, 8)
+        message_layout.setSpacing(4)
+        sender_label = QLabel(sender)
+        sender_label.setObjectName("chat-message-sender")
+        sender_label.setTextFormat(Qt.TextFormat.PlainText)
+        body_label = QLabel(message)
+        body_label.setObjectName("chat-message-body")
+        body_label.setTextFormat(Qt.TextFormat.PlainText)
+        body_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body_label.setWordWrap(True)
+        body_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        message_layout.addWidget(sender_label)
+        message_layout.addWidget(body_label)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        if kind == "user":
+            row_layout.addStretch()
+            row_layout.addWidget(frame, 3)
+        else:
+            row_layout.addWidget(frame, 3)
+            row_layout.addStretch()
+        self._conversation_layout.insertWidget(
+            self._conversation_layout.count() - 1, row
+        )
+        self._conversation_layout.activate()
         scrollbar = self.conversation.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
     def _set_awaiting(self, awaiting: bool) -> None:
         self.send_button.setEnabled(not awaiting)
         self.waiting_label.setVisible(awaiting)
+        self.stop_waiting_button.setVisible(awaiting)
 
     def _complete_interaction(self) -> None:
         self._set_awaiting(False)
@@ -229,7 +297,7 @@ class ChatWindow(QMainWindow):
         payload = json.dumps(
             {"messages": [{"role": "user", "content": message}], "capability": "chat"}
         ).encode("utf-8")
-        self._append_conversation(f"You: {message}")
+        self._append_conversation("You", message, "user")
         self.input.clear()
         reply = self._network.post(request, payload)
         self._reply = reply
@@ -237,12 +305,25 @@ class ChatWindow(QMainWindow):
         self._timer.start()
         self._set_awaiting(True)
 
+    def stop_waiting(self) -> None:
+        if self._reply is None:
+            return
+        # Ending this client wait does not establish any HAC-side cancellation.
+        reply = self._reply
+        self._reply = None
+        self._timer.stop()
+        reply.abort()
+        self._append_conversation(
+            "Request status", "Stopped waiting for the response.", "status"
+        )
+        self._complete_interaction()
+
     def _timed_out(self) -> None:
         if self._reply is None:
             return
         # The reply may finish later. Its completion must not affect this window.
         self._reply = None
-        self._append_conversation("The request timed out.")
+        self._append_conversation("Request status", "The request timed out.", "status")
         self._complete_interaction()
 
     def _finished(self) -> None:
@@ -268,8 +349,11 @@ class ChatWindow(QMainWindow):
             except (ValueError, TypeError, KeyError):
                 message = "Home AI Cluster returned an invalid response."
             else:
-                message = f"Home AI Cluster: {content}"
-        self._append_conversation(message)
+                self._append_conversation("Home AI Cluster", content, "hac")
+                self._complete_interaction()
+                reply.deleteLater()
+                return
+        self._append_conversation("Request status", message, "status")
         self._complete_interaction()
         reply.deleteLater()
 

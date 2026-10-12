@@ -19,7 +19,7 @@ The default client wait is 120 seconds. To choose a wait from 1 to 3600 seconds 
 uv run home-ai-cluster-desktop --timeout-seconds 300
 ```
 
-The window also presents a snapshot of HAC-owned active routable capabilities. It reads this once at startup and again only when you choose **Refresh**. The snapshot is informational, not health, readiness, or monitoring. A timeout ends the Desktop Chat wait; it does not establish whether HAC-side work continued or stopped.
+The window also presents a snapshot of HAC-owned active routable capabilities. It reads this once at startup and again only when you choose **Refresh**. The snapshot is informational, not health, readiness, or monitoring. A timeout or **Stop waiting** ends the current Desktop Chat wait; neither establishes whether HAC-side work continued or stopped. A later Send is a new independent request.
 
 Run checks with:
 

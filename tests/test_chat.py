@@ -10,9 +10,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QTextCursor  # noqa: E402
-from PySide6.QtNetwork import QNetworkProxy  # noqa: E402
+from PySide6.QtNetwork import QNetworkProxy, QNetworkReply  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFrame, QLabel  # noqa: E402
 
 from home_ai_cluster_desktop import app as desktop  # noqa: E402
 
@@ -44,6 +44,8 @@ def server():
         "status": 200,
         "body": result_body(),
         "wait": False,
+        "post_waits": [],
+        "post_bodies": [],
         "completed": 0,
     }
 
@@ -51,15 +53,17 @@ def server():
         def do_POST(self):
             size = int(self.headers["Content-Length"])
             received.append((self.path, json.loads(self.rfile.read(size))))
-            if plan["wait"]:
+            wait = plan["post_waits"].pop(0) if plan["post_waits"] else plan["wait"]
+            body = plan["post_bodies"].pop(0) if plan["post_bodies"] else plan["body"]
+            if wait:
                 gate.wait(3)
             self.send_response(plan["status"])
             if plan["status"] == 302:
                 self.send_header("Location", "/redirect-target")
             self.end_headers()
             try:
-                self.wfile.write(plan["body"])
-            except BrokenPipeError:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError):
                 pass
             plan["completed"] += 1
 
@@ -101,6 +105,22 @@ def send(window, message):
     window.send_button.click()
 
 
+def presented_messages(window):
+    messages = []
+    for frame in window.conversation.findChildren(QFrame):
+        kind = frame.objectName().removeprefix("chat-message-")
+        if kind not in {"user", "hac", "status"}:
+            continue
+        messages.append(
+            (
+                kind,
+                frame.findChild(QLabel, "chat-message-sender").text(),
+                frame.findChild(QLabel, "chat-message-body").text(),
+            )
+        )
+    return messages
+
+
 def test_enter_sends_and_shift_enter_inserts_newline(monkeypatch, qt_app, server):
     window = window_for(monkeypatch, qt_app, server)
     _, received, _, _ = server
@@ -134,7 +154,8 @@ def test_two_independent_sends_and_whitespace(monkeypatch, qt_app, server):
     assert received == []
     send(window, "First")
     until(qt_app, lambda: window.send_button.isEnabled())
-    assert "Home AI Cluster: Hello" in window.conversation.toPlainText()
+    assert ("hac", "Home AI Cluster", "Hello") in presented_messages(window)
+    assert not window.stop_waiting_button.isVisible()
     send(window, "Second")
     until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
     assert received == [
@@ -150,6 +171,46 @@ def test_two_independent_sends_and_whitespace(monkeypatch, qt_app, server):
     window.close()
 
 
+def test_messages_are_separate_plain_text_units_in_chronological_order(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    plan["body"] = result_body(content="First response\nwith another line")
+    send(window, "First request\nwith another line")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    plan["body"] = result_body(content="Second response")
+    send(window, "Second request")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    assert presented_messages(window) == [
+        ("user", "You", "First request\nwith another line"),
+        ("hac", "Home AI Cluster", "First response\nwith another line"),
+        ("user", "You", "Second request"),
+        ("hac", "Home AI Cluster", "Second response"),
+    ]
+    window.close()
+
+
+def test_html_looking_text_is_presented_literally(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    literal = '<script>alert("hello")</script>'
+    plan["body"] = result_body(content=literal)
+    send(window, literal)
+    until(qt_app, lambda: window.send_button.isEnabled())
+    messages = presented_messages(window)
+    assert messages == [("user", "You", literal), ("hac", "Home AI Cluster", literal)]
+    for frame in window.conversation.findChildren(QFrame):
+        if frame.objectName() in {
+            "chat-message-user",
+            "chat-message-hac",
+            "chat-message-status",
+        }:
+            body = frame.findChild(QLabel, "chat-message-body")
+            assert body.textFormat() == Qt.TextFormat.PlainText
+    window.close()
+
+
 def test_one_request_at_a_time_and_late_reply(monkeypatch, qt_app, server):
     window = window_for(monkeypatch, qt_app, server, timeout=1)
     _, received, plan, gate = server
@@ -162,8 +223,11 @@ def test_one_request_at_a_time_and_late_reply(monkeypatch, qt_app, server):
     window.send()  # Even a direct invocation cannot queue work.
     assert len(received) == 1
     until(qt_app, lambda: window.send_button.isEnabled(), seconds=2)
-    assert "The request timed out." in window.conversation.toPlainText()
+    assert ("status", "Request status", "The request timed out.") in presented_messages(
+        window
+    )
     assert not window.waiting_label.isVisible()
+    assert not window.stop_waiting_button.isVisible()
     assert window.input.hasFocus()
     plan["wait"] = False
     send(window, "New")
@@ -173,7 +237,83 @@ def test_one_request_at_a_time_and_late_reply(monkeypatch, qt_app, server):
     for _ in range(20):
         qt_app.processEvents()
         time.sleep(0.01)
-    assert window.conversation.toPlainText().count("Home AI Cluster: Hello") == 1
+    assert presented_messages(window).count(("hac", "Home AI Cluster", "Hello")) == 1
+    window.close()
+
+
+def test_stop_waiting_ends_only_the_current_client_wait(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server, timeout=1)
+    _, received, plan, _ = server
+    assert not window.stop_waiting_button.isVisible()
+    plan["wait"] = True
+    send(window, "Slow")
+    until(qt_app, lambda: len(received) == 1)
+    assert not window.send_button.isEnabled()
+    assert window.stop_waiting_button.isVisible()
+    assert window.waiting_label.isVisible()
+    reply = window._reply
+    assert reply is not None
+
+    window.stop_waiting_button.click()
+
+    assert reply.error() == QNetworkReply.NetworkError.OperationCanceledError
+    assert window.send_button.isEnabled()
+    assert not window.stop_waiting_button.isVisible()
+    assert not window.waiting_label.isVisible()
+    assert not window._timer.isActive()
+    assert window.input.hasFocus()
+    assert len(received) == 1
+    assert presented_messages(window) == [
+        ("user", "You", "Slow"),
+        ("status", "Request status", "Stopped waiting for the response."),
+    ]
+    window.close()
+
+
+def test_stopped_wait_late_reply_cannot_overwrite_newer_request(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, gate = server
+    plan["post_waits"] = [True, False]
+    plan["post_bodies"] = [
+        result_body(content="Late first response"),
+        result_body(content="Second response"),
+    ]
+    send(window, "First")
+    until(qt_app, lambda: len(received) == 1)
+    window.stop_waiting_button.click()
+    send(window, "Second")
+    until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
+    assert presented_messages(window) == [
+        ("user", "You", "First"),
+        ("status", "Request status", "Stopped waiting for the response."),
+        ("user", "You", "Second"),
+        ("hac", "Home AI Cluster", "Second response"),
+    ]
+
+    gate.set()
+    until(qt_app, lambda: plan["completed"] == 2)
+    for _ in range(5):
+        qt_app.processEvents()
+    assert window.send_button.isEnabled()
+    assert not window.stop_waiting_button.isVisible()
+    assert presented_messages(window) == [
+        ("user", "You", "First"),
+        ("status", "Request status", "Stopped waiting for the response."),
+        ("user", "You", "Second"),
+        ("hac", "Home AI Cluster", "Second response"),
+    ]
+    assert received == [
+        (
+            "/v1/chat",
+            {"messages": [{"role": "user", "content": "First"}], "capability": "chat"},
+        ),
+        (
+            "/v1/chat",
+            {"messages": [{"role": "user", "content": "Second"}], "capability": "chat"},
+        ),
+    ]
     window.close()
 
 
@@ -213,16 +353,18 @@ def test_bounded_failures(monkeypatch, qt_app, server, status, body, expected):
     plan.update(status=status, body=body)
     send(window, "Test")
     until(qt_app, lambda: window.send_button.isEnabled())
-    assert expected in window.conversation.toPlainText()
+    assert ("status", "Request status", expected) in presented_messages(window)
     assert not window.waiting_label.isVisible()
     assert window.input.hasFocus()
     assert len(received) == 1  # A redirect target was not requested.
-    assert "private details" not in window.conversation.toPlainText()
+    assert all(
+        "private details" not in body for _, _, body in presented_messages(window)
+    )
     if status == 500:
         plan.update(status=200, body=result_body(content="Recovered"))
         send(window, "Try again")
         until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
-        assert "Home AI Cluster: Recovered" in window.conversation.toPlainText()
+        assert ("hac", "Home AI Cluster", "Recovered") in presented_messages(window)
     window.close()
 
 
@@ -230,8 +372,9 @@ def test_success_returns_focus_and_scrolls_to_newest_content(
     monkeypatch, qt_app, server
 ):
     window = window_for(monkeypatch, qt_app, server)
-    window.conversation.setPlainText(
-        "\n".join(f"Earlier {item}" for item in range(100))
+    _, _, plan, _ = server
+    plan["body"] = result_body(
+        content="\n".join(f"Long response {item}" for item in range(100))
     )
     window.conversation.verticalScrollBar().setValue(0)
     send(window, "Newest")
@@ -253,7 +396,7 @@ def test_bypasses_application_proxy(monkeypatch, qt_app, server):
         send(window, "Direct")
         until(qt_app, lambda: window.send_button.isEnabled())
         assert len(received) == 1
-        assert "Home AI Cluster: Hello" in window.conversation.toPlainText()
+        assert ("hac", "Home AI Cluster", "Hello") in presented_messages(window)
         window.close()
     finally:
         QNetworkProxy.setApplicationProxy(QNetworkProxy())
@@ -264,13 +407,15 @@ def test_connection_failure_is_bounded(monkeypatch, qt_app, server):
     monkeypatch.setattr(desktop, "CHAT_URL", "http://127.0.0.1:1/v1/chat")
     send(window, "Unavailable")
     until(qt_app, lambda: window.send_button.isEnabled(), seconds=3)
-    conversation = window.conversation.toPlainText()
+    messages = presented_messages(window)
     assert any(
-        message in conversation
+        message == body
+        for _, _, body in messages
         for message in ("Home AI Cluster is unavailable.", "The request timed out.")
     )
-    assert "Traceback" not in conversation
-    assert "127.0.0.1:1" not in conversation
+    assert all(
+        "Traceback" not in body and "127.0.0.1:1" not in body for _, _, body in messages
+    )
     window.close()
 
 
@@ -286,7 +431,7 @@ def test_optional_model_wire_shape(monkeypatch, qt_app, server, model_field):
     plan["body"] = json.dumps(result).encode()
     send(window, "Test")
     until(qt_app, lambda: window.send_button.isEnabled())
-    assert "Home AI Cluster: Hello" in window.conversation.toPlainText()
+    assert ("hac", "Home AI Cluster", "Hello") in presented_messages(window)
     window.close()
 
 
@@ -300,5 +445,5 @@ def test_bypasses_environment_proxy(monkeypatch, qt_app, server):
     send(window, "Direct")
     until(qt_app, lambda: window.send_button.isEnabled())
     assert len(received) == 1
-    assert "Home AI Cluster: Hello" in window.conversation.toPlainText()
+    assert ("hac", "Home AI Cluster", "Hello") in presented_messages(window)
     window.close()
