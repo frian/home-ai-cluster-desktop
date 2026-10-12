@@ -248,9 +248,11 @@ class ChatWindow(QMainWindow):
         body_label.setTextFormat(Qt.TextFormat.PlainText)
         body_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         body_label.setWordWrap(True)
-        body_label.setSizePolicy(
+        body_policy = QSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
+        body_policy.setHeightForWidth(True)
+        body_label.setSizePolicy(body_policy)
         message_layout.addWidget(sender_label)
         message_layout.addWidget(body_label)
 

@@ -8,7 +8,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtGui import QTextCursor  # noqa: E402
 from PySide6.QtNetwork import QNetworkProxy, QNetworkReply  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
@@ -383,6 +383,51 @@ def test_success_returns_focus_and_scrolls_to_newest_content(
     assert scrollbar.value() == scrollbar.maximum()
     assert not window.waiting_label.isVisible()
     assert window.input.hasFocus()
+    window.close()
+
+
+def test_long_response_remains_fully_allocated_and_scrollable_after_resizing(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    final_line = "FINAL LINE OF THE RESPONSE"
+    response = (
+        "\n\n".join(
+            f"Paragraph {number}: "
+            + "A complete Chat response should stay readable after resizing. " * 6
+            for number in range(12)
+        )
+        + f"\n{final_line}"
+    )
+    plan["body"] = result_body(content=response)
+    send(window, "Show the full response")
+    until(qt_app, lambda: window.send_button.isEnabled())
+
+    frame = next(
+        frame
+        for frame in window.conversation.findChildren(QFrame)
+        if frame.objectName() == "chat-message-hac"
+    )
+    body = frame.findChild(QLabel, "chat-message-body")
+    assert body.text() == response
+
+    for width, height in ((600, 500), (430, 500), (1100, 800), (430, 500)):
+        window.resize(width, height)
+        for _ in range(20):
+            qt_app.processEvents()
+
+        scrollbar = window.conversation.verticalScrollBar()
+        assert frame.width() <= 480
+        assert body.height() >= body.heightForWidth(body.width())
+        assert body.mapTo(frame, body.rect().bottomLeft()).y() < frame.height()
+        assert scrollbar.maximum() > 0
+        scrollbar.setValue(scrollbar.maximum())
+        qt_app.processEvents()
+        last_line_bottom = body.mapTo(
+            window.conversation.viewport(), QPoint(0, body.height() - 1)
+        ).y()
+        assert 0 <= last_line_bottom < window.conversation.viewport().height()
     window.close()
 
 
