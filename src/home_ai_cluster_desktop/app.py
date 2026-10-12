@@ -108,6 +108,9 @@ class ChatWindow(QMainWindow):
         self.input.installEventFilter(self)
         self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self.send)
+        self.stop_waiting_button = QPushButton("Stop waiting")
+        self.stop_waiting_button.clicked.connect(self.stop_waiting)
+        self.stop_waiting_button.setVisible(False)
         self.waiting_label = QLabel("Waiting…")
         self.waiting_label.setVisible(False)
         self.capabilities_label = QLabel("Available capabilities")
@@ -125,6 +128,7 @@ class ChatWindow(QMainWindow):
         layout.addWidget(self.conversation)
         layout.addWidget(self.input)
         layout.addWidget(self.waiting_label)
+        layout.addWidget(self.stop_waiting_button)
         layout.addWidget(self.send_button)
         central = QWidget()
         central.setLayout(layout)
@@ -269,6 +273,7 @@ class ChatWindow(QMainWindow):
     def _set_awaiting(self, awaiting: bool) -> None:
         self.send_button.setEnabled(not awaiting)
         self.waiting_label.setVisible(awaiting)
+        self.stop_waiting_button.setVisible(awaiting)
 
     def _complete_interaction(self) -> None:
         self._set_awaiting(False)
@@ -299,6 +304,17 @@ class ChatWindow(QMainWindow):
         reply.finished.connect(self._finished)
         self._timer.start()
         self._set_awaiting(True)
+
+    def stop_waiting(self) -> None:
+        if self._reply is None:
+            return
+        # Ending this client wait does not establish any HAC-side cancellation.
+        self._reply = None
+        self._timer.stop()
+        self._append_conversation(
+            "Request status", "Stopped waiting for the response.", "status"
+        )
+        self._complete_interaction()
 
     def _timed_out(self) -> None:
         if self._reply is None:

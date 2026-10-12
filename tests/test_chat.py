@@ -44,6 +44,8 @@ def server():
         "status": 200,
         "body": result_body(),
         "wait": False,
+        "post_waits": [],
+        "post_bodies": [],
         "completed": 0,
     }
 
@@ -51,14 +53,16 @@ def server():
         def do_POST(self):
             size = int(self.headers["Content-Length"])
             received.append((self.path, json.loads(self.rfile.read(size))))
-            if plan["wait"]:
+            wait = plan["post_waits"].pop(0) if plan["post_waits"] else plan["wait"]
+            body = plan["post_bodies"].pop(0) if plan["post_bodies"] else plan["body"]
+            if wait:
                 gate.wait(3)
             self.send_response(plan["status"])
             if plan["status"] == 302:
                 self.send_header("Location", "/redirect-target")
             self.end_headers()
             try:
-                self.wfile.write(plan["body"])
+                self.wfile.write(body)
             except BrokenPipeError:
                 pass
             plan["completed"] += 1
@@ -151,6 +155,7 @@ def test_two_independent_sends_and_whitespace(monkeypatch, qt_app, server):
     send(window, "First")
     until(qt_app, lambda: window.send_button.isEnabled())
     assert ("hac", "Home AI Cluster", "Hello") in presented_messages(window)
+    assert not window.stop_waiting_button.isVisible()
     send(window, "Second")
     until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
     assert received == [
@@ -222,6 +227,7 @@ def test_one_request_at_a_time_and_late_reply(monkeypatch, qt_app, server):
         window
     )
     assert not window.waiting_label.isVisible()
+    assert not window.stop_waiting_button.isVisible()
     assert window.input.hasFocus()
     plan["wait"] = False
     send(window, "New")
@@ -232,6 +238,79 @@ def test_one_request_at_a_time_and_late_reply(monkeypatch, qt_app, server):
         qt_app.processEvents()
         time.sleep(0.01)
     assert presented_messages(window).count(("hac", "Home AI Cluster", "Hello")) == 1
+    window.close()
+
+
+def test_stop_waiting_ends_only_the_current_client_wait(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server, timeout=1)
+    _, received, plan, _ = server
+    assert not window.stop_waiting_button.isVisible()
+    plan["wait"] = True
+    send(window, "Slow")
+    until(qt_app, lambda: len(received) == 1)
+    assert not window.send_button.isEnabled()
+    assert window.stop_waiting_button.isVisible()
+    assert window.waiting_label.isVisible()
+
+    window.stop_waiting_button.click()
+
+    assert window.send_button.isEnabled()
+    assert not window.stop_waiting_button.isVisible()
+    assert not window.waiting_label.isVisible()
+    assert not window._timer.isActive()
+    assert window.input.hasFocus()
+    assert len(received) == 1
+    assert presented_messages(window) == [
+        ("user", "You", "Slow"),
+        ("status", "Request status", "Stopped waiting for the response."),
+    ]
+    window.close()
+
+
+def test_stopped_wait_late_reply_cannot_overwrite_newer_request(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, gate = server
+    plan["post_waits"] = [True, False]
+    plan["post_bodies"] = [
+        result_body(content="Late first response"),
+        result_body(content="Second response"),
+    ]
+    send(window, "First")
+    until(qt_app, lambda: len(received) == 1)
+    window.stop_waiting_button.click()
+    send(window, "Second")
+    until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
+    assert presented_messages(window) == [
+        ("user", "You", "First"),
+        ("status", "Request status", "Stopped waiting for the response."),
+        ("user", "You", "Second"),
+        ("hac", "Home AI Cluster", "Second response"),
+    ]
+
+    gate.set()
+    until(qt_app, lambda: plan["completed"] == 2)
+    for _ in range(5):
+        qt_app.processEvents()
+    assert window.send_button.isEnabled()
+    assert not window.stop_waiting_button.isVisible()
+    assert presented_messages(window) == [
+        ("user", "You", "First"),
+        ("status", "Request status", "Stopped waiting for the response."),
+        ("user", "You", "Second"),
+        ("hac", "Home AI Cluster", "Second response"),
+    ]
+    assert received == [
+        (
+            "/v1/chat",
+            {"messages": [{"role": "user", "content": "First"}], "capability": "chat"},
+        ),
+        (
+            "/v1/chat",
+            {"messages": [{"role": "user", "content": "Second"}], "capability": "chat"},
+        ),
+    ]
     window.close()
 
 
