@@ -162,7 +162,6 @@ def test_refresh_waits_without_queueing_or_blocking_chat(monkeypatch, qt_app, se
         b'{"capabilities":["chat"],"extra":1}',
         b'{"capabilities":["chat","chat"]}',
         b'{"capabilities":["chat"],"capabilities":[]}',
-        b'{"capabilities":["unknown"]}',
         b'{"capabilities":[42]}',
     ],
 )
@@ -173,6 +172,16 @@ def test_bad_response_replaces_snapshot(monkeypatch, qt_app, server, body):
     plan["body"] = body
     window.refresh_button.click()
     assert observed(qt_app, window) == "Capabilities unavailable"
+    window.close()
+
+
+def test_unfamiliar_capability_is_presented(monkeypatch, qt_app, server):
+    _, _, plan, _ = server
+    window = window_for(monkeypatch, qt_app, server)
+    assert observed(qt_app, window) == "chat"
+    plan["body"] = b'{"capabilities":["future-capability"]}'
+    window.refresh_button.click()
+    assert observed(qt_app, window) == "future-capability"
     window.close()
 
 

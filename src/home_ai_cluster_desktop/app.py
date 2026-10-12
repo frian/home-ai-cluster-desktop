@@ -25,9 +25,6 @@ from PySide6.QtWidgets import (
 CHAT_URL = "http://127.0.0.1:25042/v1/chat"
 CAPABILITIES_URL = "http://127.0.0.1:25042/diagnostics/caller-routable-capabilities"
 CAPABILITY_WAIT_MS = 5000
-ACCEPTED_CAPABILITY_NAMES = frozenset(
-    ("chat", "summarize", "classify", "code", "image-generation")
-)
 
 
 def capability_names(result: object) -> list[str]:
@@ -37,10 +34,7 @@ def capability_names(result: object) -> list[str]:
     names = result["capabilities"]
     if (
         not isinstance(names, list)
-        or any(
-            not isinstance(name, str) or name not in ACCEPTED_CAPABILITY_NAMES
-            for name in names
-        )
+        or any(not isinstance(name, str) for name in names)
         or len(names) != len(set(names))
     ):
         raise ValueError("invalid capability names")
