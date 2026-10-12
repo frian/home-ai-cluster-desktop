@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtNetwork import QNetworkProxy  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFrame, QLabel  # noqa: E402
 
 from home_ai_cluster_desktop import app as desktop  # noqa: E402
 
@@ -102,6 +102,22 @@ def observed(qt_app, window):
     return window.capabilities_value.text()
 
 
+def presented_messages(window):
+    messages = []
+    for frame in window.conversation.findChildren(QFrame):
+        kind = frame.objectName().removeprefix("chat-message-")
+        if kind not in {"user", "hac", "status"}:
+            continue
+        messages.append(
+            (
+                kind,
+                frame.findChild(QLabel, "chat-message-sender").text(),
+                frame.findChild(QLabel, "chat-message-body").text(),
+            )
+        )
+    return messages
+
+
 def test_startup_refresh_replacement_and_no_automatic_observation(
     monkeypatch, qt_app, server
 ):
@@ -136,19 +152,19 @@ def test_refresh_waits_without_queueing_or_blocking_chat(monkeypatch, qt_app, se
     window.input.setPlainText("Private chat message")
     window.send_button.click()
     until(qt_app, lambda: window.send_button.isEnabled())
-    assert (
-        window.conversation.toPlainText()
-        == "You: Private chat message\nHome AI Cluster: Hello"
-    )
+    assert presented_messages(window) == [
+        ("user", "You", "Private chat message"),
+        ("hac", "Home AI Cluster", "Hello"),
+    ]
     assert window.capabilities_value.text() == "chat"
     assert len(received) == 3
     assert received[1] == ("GET", "/diagnostics/caller-routable-capabilities", None)
     gate.set()
     assert observed(qt_app, window) == "chat"
-    assert (
-        window.conversation.toPlainText()
-        == "You: Private chat message\nHome AI Cluster: Hello"
-    )
+    assert presented_messages(window) == [
+        ("user", "You", "Private chat message"),
+        ("hac", "Home AI Cluster", "Hello"),
+    ]
     window.close()
 
 
@@ -239,10 +255,10 @@ def test_chat_in_flight_does_not_block_refresh(monkeypatch, qt_app, server):
     window.refresh_button.click()
     assert observed(qt_app, window) == "code"
     assert not window.send_button.isEnabled()
-    assert window.conversation.toPlainText() == "You: Chat stays pending"
+    assert presented_messages(window) == [("user", "You", "Chat stays pending")]
     gate.set()
     until(qt_app, lambda: window.send_button.isEnabled())
-    assert "Home AI Cluster: Hello" in window.conversation.toPlainText()
+    assert ("hac", "Home AI Cluster", "Hello") in presented_messages(window)
     assert window.capabilities_value.text() == "code"
     window.close()
 
@@ -267,7 +283,7 @@ def test_proxy_is_bypassed_and_get_has_no_chat_content(monkeypatch, qt_app, serv
             ("GET", "/diagnostics/caller-routable-capabilities", None),
         ]
         assert window.input.toPlainText() == "unsent secret"
-        assert window.conversation.toPlainText() == ""
+        assert presented_messages(window) == []
         window.close()
     finally:
         QNetworkProxy.setApplicationProxy(QNetworkProxy())
