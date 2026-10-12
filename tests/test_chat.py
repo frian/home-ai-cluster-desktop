@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QTextCursor  # noqa: E402
-from PySide6.QtNetwork import QNetworkProxy  # noqa: E402
+from PySide6.QtNetwork import QNetworkProxy, QNetworkReply  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFrame, QLabel  # noqa: E402
 
@@ -251,9 +251,12 @@ def test_stop_waiting_ends_only_the_current_client_wait(monkeypatch, qt_app, ser
     assert not window.send_button.isEnabled()
     assert window.stop_waiting_button.isVisible()
     assert window.waiting_label.isVisible()
+    reply = window._reply
+    assert reply is not None
 
     window.stop_waiting_button.click()
 
+    assert reply.error() == QNetworkReply.NetworkError.OperationCanceledError
     assert window.send_button.isEnabled()
     assert not window.stop_waiting_button.isVisible()
     assert not window.waiting_label.isVisible()

@@ -309,8 +309,10 @@ class ChatWindow(QMainWindow):
         if self._reply is None:
             return
         # Ending this client wait does not establish any HAC-side cancellation.
+        reply = self._reply
         self._reply = None
         self._timer.stop()
+        reply.abort()
         self._append_conversation(
             "Request status", "Stopped waiting for the response.", "status"
         )
