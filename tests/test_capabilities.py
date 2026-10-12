@@ -198,6 +198,7 @@ def test_http_failure_and_redirect_are_bounded(monkeypatch, qt_app, server, stat
 
 
 def test_transport_failure_replaces_snapshot(monkeypatch, qt_app, server):
+    monkeypatch.setattr(desktop, "CAPABILITY_WAIT_MS", 1000)
     window = window_for(monkeypatch, qt_app, server)
     assert observed(qt_app, window) == "chat"
     monkeypatch.setattr(desktop, "CAPABILITIES_URL", "http://127.0.0.1:1/unavailable")
