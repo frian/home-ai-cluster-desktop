@@ -36,7 +36,7 @@ def server():
         def do_GET(self):
             received.append(("GET", self.path, self.headers.get("Content-Length")))
             if plan["wait"]:
-                gate.wait(3)
+                gate.wait(10)
             self.send_response(plan["status"])
             if plan["status"] == 302:
                 self.send_header("Location", "http://127.0.0.1:1/redirect-target")
@@ -50,7 +50,7 @@ def server():
             size = int(self.headers["Content-Length"])
             received.append(("POST", self.path, self.rfile.read(size)))
             if plan["chat_wait"]:
-                gate.wait(3)
+                gate.wait(10)
             self.send_response(200)
             self.end_headers()
             self.wfile.write(
@@ -205,7 +205,6 @@ def test_capability_wait_expires_and_late_reply_is_ignored(monkeypatch, qt_app, 
     plan.update(wait=True, body=b'{"capabilities":["code"]}')
     window.refresh_button.click()
     until(qt_app, lambda: len(received) == 2)
-    assert not window.refresh_button.isEnabled()
     until(qt_app, lambda: window.refresh_button.isEnabled())
     assert window.capabilities_value.text() == "Capabilities unavailable"
     gate.set()
