@@ -679,15 +679,12 @@ def test_conversation_column_reflows_without_horizontal_overflow(
     window.close()
 
 
-def test_chat_window_re_evaluates_table_presentation_at_real_response_widths(
+def test_chat_window_re_evaluates_overflow_presentation_at_real_response_widths(
     monkeypatch, qt_app, server
 ):
     window = window_for(monkeypatch, qt_app, server)
     _, received, plan, _ = server
-    headers = [f"Column {number}" for number in range(11)]
-    source = "| " + " | ".join(headers) + " |\n"
-    source += "| " + " | ".join(["---"] * len(headers)) + " |\n"
-    source += "| " + " | ".join(["value"] * len(headers)) + " |"
+    source = "Before code:\n\n```text\n" + "M" * 64 + "\n```\n\nFINAL LINE"
     plan["body"] = result_body(content=source)
     send(window, "Show responsive table")
     until(qt_app, lambda: window.send_button.isEnabled())
@@ -698,11 +695,23 @@ def test_chat_window_re_evaluates_table_presentation_at_real_response_widths(
     )
     body = response_body(frame)
     presentations = []
+    candidate_widths = []
+    viewport_widths = []
 
     for width, height in ((430, 500), (600, 500), (1100, 800), (1600, 900), (430, 500)):
         window.resize(width, height)
         for _ in range(20):
             qt_app.processEvents()
+        candidate = desktop.ResourceBlockingDocument()
+        candidate.setDocumentMargin(0)
+        candidate.setMarkdown(
+            source,
+            QTextDocument.MarkdownFeature.MarkdownDialectGitHub
+            | QTextDocument.MarkdownFeature.MarkdownNoHTML,
+        )
+        candidate.setTextWidth(body.viewport().width())
+        candidate_widths.append(candidate.size().width())
+        viewport_widths.append(body.viewport().width())
         presentations.append(body._showing_plain_text)
         assert body.viewport().width() > 0
         assert body.horizontalScrollBar().maximum() == 0
@@ -712,9 +721,13 @@ def test_chat_window_re_evaluates_table_presentation_at_real_response_widths(
         assert len(received) == 1
 
     assert presentations[0]
+    assert candidate_widths[0] > viewport_widths[0] + 0.5
+    assert not presentations[1]
+    assert candidate_widths[1] <= viewport_widths[1] + 0.5
     assert not presentations[2]
     assert not presentations[3]
     assert presentations[4]
+    assert candidate_widths[4] > viewport_widths[4] + 0.5
     assert body.toPlainText() == source
     scrollbar = window.conversation.verticalScrollBar()
     scrollbar.setValue(scrollbar.maximum())
