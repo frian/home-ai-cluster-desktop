@@ -446,11 +446,14 @@ def test_conversation_is_centered_and_bounded_at_wide_widths(
 ):
     window = window_for(monkeypatch, qt_app, server)
     _, _, plan, _ = server
-    plan["body"] = result_body(content="A response")
+    long_message = (
+        "A comfortably wide message should use the available frame width. " * 30
+    )
+    plan["body"] = result_body(content=long_message)
     window.resize(1600, 900)
-    send(window, "A request")
+    send(window, long_message)
     until(qt_app, lambda: window.send_button.isEnabled())
-    window._append_conversation("Request status", "A status", "status")
+    window._append_conversation("Request status", long_message, "status")
     qt_app.processEvents()
 
     viewport = window.conversation.viewport()
@@ -475,7 +478,11 @@ def test_conversation_is_centered_and_bounded_at_wide_widths(
         frames["status"].mapTo(viewport, frames["status"].rect().topLeft()).x()
     )
     assert abs(status_left - column_left) <= 1
-    assert all(frame.width() <= 480 for frame in frames.values())
+    assert frames["user"].width() <= 600
+    assert frames["hac"].width() <= 720
+    assert frames["status"].width() <= 480
+    assert frames["user"].width() > 480
+    assert frames["hac"].width() > 480
     window.close()
 
 
@@ -497,8 +504,14 @@ def test_conversation_column_reflows_without_horizontal_overflow(
         assert window._conversation_column.width() <= min(900, viewport.width())
         assert window.conversation.horizontalScrollBar().maximum() == 0
         for frame in window.conversation.findChildren(QFrame):
-            if frame.objectName().startswith("chat-message-"):
-                assert frame.width() <= 480
+            if frame.objectName() in {
+                "chat-message-user",
+                "chat-message-hac",
+                "chat-message-status",
+            }:
+                kind = frame.objectName().removeprefix("chat-message-")
+                assert frame.width() <= {"user": 600, "hac": 720, "status": 480}[kind]
+                assert frame.geometry().right() < window._conversation_column.width()
     window.close()
 
 
@@ -540,7 +553,7 @@ def test_long_response_remains_fully_allocated_and_scrollable_after_resizing(
             qt_app.processEvents()
 
         scrollbar = window.conversation.verticalScrollBar()
-        assert frame.width() <= 480
+        assert frame.width() <= 720
         assert body.height() >= body.heightForWidth(body.width())
         assert body.mapTo(frame, body.rect().bottomLeft()).y() < frame.height()
         assert scrollbar.maximum() > 0
