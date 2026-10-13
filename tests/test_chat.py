@@ -684,7 +684,57 @@ def test_chat_window_re_evaluates_overflow_presentation_at_real_response_widths(
 ):
     window = window_for(monkeypatch, qt_app, server)
     _, received, plan, _ = server
-    source = "Before code:\n\n```text\n" + "M" * 64 + "\n```\n\nFINAL LINE"
+    sizes = ((430, 500), (600, 500), (1100, 800), (1600, 900), (430, 500))
+    calibration = desktop.ChatWindow()
+    calibration.show()
+    qt_app.processEvents()
+    calibration.resize(*sizes[0])
+    qt_app.processEvents()
+    calibration._append_conversation("Home AI Cluster", "Probe", "hac")
+    probe_frame = next(
+        frame
+        for frame in calibration.conversation.findChildren(QFrame)
+        if frame.objectName() == "chat-message-hac"
+    )
+    probe_body = response_body(probe_frame)
+    probe_viewports = []
+    for width, height in sizes[:4]:
+        calibration.resize(width, height)
+        qt_app.processEvents()
+        probe_viewports.append(probe_body.viewport().width())
+    probe_font = probe_body.document().defaultFont()
+    probe_text_option = probe_body.document().defaultTextOption()
+
+    def markdown_width(count, text_width):
+        candidate = desktop.ResourceBlockingDocument()
+        candidate.setDocumentMargin(0)
+        candidate.setDefaultFont(probe_font)
+        candidate.setDefaultTextOption(probe_text_option)
+        candidate.setMarkdown(
+            "```text\n" + "M" * count + "\n```",
+            QTextDocument.MarkdownFeature.MarkdownDialectGitHub
+            | QTextDocument.MarkdownFeature.MarkdownNoHTML,
+        )
+        candidate.setTextWidth(text_width)
+        candidate.size()
+        return candidate.idealWidth()
+
+    narrow_width = probe_viewports[0]
+    wider_width = next(
+        width for width in probe_viewports[1:] if width > narrow_width + 0.5
+    )
+    target_width = (narrow_width + wider_width) / 2
+    counts = [
+        count
+        for count in range(1, 201)
+        if narrow_width + 0.5 < markdown_width(count, 10000) <= wider_width + 0.5
+    ]
+    assert counts
+    code_count = min(
+        counts, key=lambda count: abs(markdown_width(count, 10000) - target_width)
+    )
+    source = "Before code:\n\n```text\n" + "M" * code_count + "\n```\n\nFINAL LINE"
+    calibration.close()
     plan["body"] = result_body(content=source)
     send(window, "Show responsive table")
     until(qt_app, lambda: window.send_button.isEnabled())
@@ -698,7 +748,7 @@ def test_chat_window_re_evaluates_overflow_presentation_at_real_response_widths(
     candidate_widths = []
     viewport_widths = []
 
-    for width, height in ((430, 500), (600, 500), (1100, 800), (1600, 900), (430, 500)):
+    for width, height in sizes:
         window.resize(width, height)
         for _ in range(20):
             qt_app.processEvents()
@@ -715,21 +765,6 @@ def test_chat_window_re_evaluates_overflow_presentation_at_real_response_widths(
         candidate_widths.append(candidate.size().width())
         viewport_widths.append(body.viewport().width())
         presentations.append(body._showing_plain_text)
-        print(
-            {
-                "window": (window.width(), window.height()),
-                "viewport": body.viewport().width(),
-                "candidate_width": candidate_widths[-1],
-                "candidate_ideal_width": candidate.idealWidth(),
-                "document_width": body.document().size().width(),
-                "document_text_width": body.document().textWidth(),
-                "cached_width": body._last_available_width,
-                "plain": body._showing_plain_text,
-                "resource": body.resource_request_observed,
-                "candidate_font": candidate.defaultFont().toString(),
-                "document_font": body.document().defaultFont().toString(),
-            }
-        )
         assert body.viewport().width() > 0
         assert body.horizontalScrollBar().maximum() == 0
         assert window.conversation.horizontalScrollBar().maximum() == 0
@@ -739,10 +774,11 @@ def test_chat_window_re_evaluates_overflow_presentation_at_real_response_widths(
 
     assert presentations[0]
     assert candidate_widths[0] > viewport_widths[0] + 0.5
-    assert not presentations[1]
-    assert candidate_widths[1] <= viewport_widths[1] + 0.5
-    assert not presentations[2]
-    assert not presentations[3]
+    for candidate_width, viewport_width, presentation in zip(
+        candidate_widths, viewport_widths, presentations, strict=True
+    ):
+        assert presentation is (candidate_width > viewport_width + 0.5)
+    assert any(not presentation for presentation in presentations[1:-1])
     assert presentations[4]
     assert candidate_widths[4] > viewport_widths[4] + 0.5
     assert body.toPlainText() == source
