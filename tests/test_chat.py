@@ -386,6 +386,67 @@ def test_success_returns_focus_and_scrolls_to_newest_content(
     window.close()
 
 
+def test_conversation_is_centered_and_bounded_at_wide_widths(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    plan["body"] = result_body(content="A response")
+    window.resize(1600, 900)
+    send(window, "A request")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    window._append_conversation("Request status", "A status", "status")
+    qt_app.processEvents()
+
+    viewport = window.conversation.viewport()
+    column = window._conversation_column
+    column_left = column.mapTo(viewport, column.rect().topLeft()).x()
+    column_right = column.mapTo(viewport, column.rect().topRight()).x()
+    assert column.width() <= 900
+    assert abs(column_left - (viewport.width() - column.width()) // 2) <= 2
+
+    frames = {
+        frame.objectName().removeprefix("chat-message-"): frame
+        for frame in window.conversation.findChildren(QFrame)
+        if frame.objectName()
+        in {"chat-message-user", "chat-message-hac", "chat-message-status"}
+    }
+    user_left = frames["user"].mapTo(viewport, frames["user"].rect().topLeft()).x()
+    hac_left = frames["hac"].mapTo(viewport, frames["hac"].rect().topLeft()).x()
+    assert user_left + frames["user"].width() <= column_right + 1
+    assert user_left > hac_left
+    assert abs(hac_left - column_left) <= 1
+    status_left = (
+        frames["status"].mapTo(viewport, frames["status"].rect().topLeft()).x()
+    )
+    assert abs(status_left - column_left) <= 1
+    assert all(frame.width() <= 480 for frame in frames.values())
+    window.close()
+
+
+def test_conversation_column_reflows_without_horizontal_overflow(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    plan["body"] = result_body(content="A response that wraps naturally. " * 20)
+    send(window, "A request that wraps naturally. " * 20)
+    until(qt_app, lambda: window.send_button.isEnabled())
+
+    for width, height in ((430, 500), (600, 500), (1100, 800), (430, 500)):
+        window.resize(width, height)
+        for _ in range(10):
+            qt_app.processEvents()
+
+        viewport = window.conversation.viewport()
+        assert window._conversation_column.width() <= min(900, viewport.width())
+        assert window.conversation.horizontalScrollBar().maximum() == 0
+        for frame in window.conversation.findChildren(QFrame):
+            if frame.objectName().startswith("chat-message-"):
+                assert frame.width() <= 480
+    window.close()
+
+
 def test_long_response_remains_fully_allocated_and_scrollable_after_resizing(
     monkeypatch, qt_app, server
 ):
