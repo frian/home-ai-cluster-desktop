@@ -269,7 +269,7 @@ class ChatWindow(QMainWindow):
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.StyledPanel)
         frame.setObjectName(f"chat-message-{kind}")
-        frame.setMaximumWidth(480)
+        frame.setMaximumWidth({"user": 600, "hac": 720, "status": 480}[kind])
         frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         palette = frame.palette()
         if kind == "user":
