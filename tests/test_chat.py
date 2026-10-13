@@ -136,6 +136,137 @@ def response_body(frame):
     return body
 
 
+def response_for(message, qt_app, width=600):
+    body = desktop.HacResponseBody(message)
+    body.resize(width, 200)
+    body.show()
+    qt_app.processEvents()
+    return body
+
+
+def test_native_markdown_renders_supported_structures_without_link_activation(qt_app):
+    source = """# Heading
+
+**bold** and *italic* with `inline code`
+
+1. first
+2. second
+
+- outer
+  - nested
+
+> quoted
+
+```python
+print("code")
+```
+
+| Left | Right |
+| --- | --- |
+| one | two |
+
+[ordinary link](https://example.invalid/path)
+"""
+    body = response_for(source, qt_app)
+    html = body.document().toHtml().lower()
+    assert not body._showing_plain_text
+    assert "<h1" in html and "font-weight" in html and "font-style" in html
+    assert "<ol" in html and "<ul" in html and "<table" in html
+    assert "quoted" in html and "href=" in html
+    assert body.textInteractionFlags() == Qt.TextInteractionFlag.TextSelectableByMouse
+    assert not body.resource_request_observed
+    body.close()
+
+
+def test_raw_html_is_inert_markdown_text(qt_app):
+    source = '<img src="https://example.invalid/image.png"><b>not HTML</b>'
+    body = response_for(source, qt_app)
+    assert source in body.toPlainText()
+    assert not body.resource_request_observed
+    assert "<img" not in body.document().toHtml().lower()
+    body.close()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.invalid/image.png",
+        "http://example.invalid/image.png",
+        "file:///not-permitted/image.png",
+        "relative-image.png",
+        "data:image/png;base64,AAAA",
+    ],
+)
+def test_resource_requests_fall_back_to_exact_original_plain_text(qt_app, url):
+    source = f"Before image.\n\n![alternative text]({url})\n\nAfter image."
+    body = response_for(source, qt_app)
+    assert body.resource_request_observed
+    assert body._showing_plain_text
+    assert body.toPlainText() == source
+    assert body.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    body.close()
+
+
+def test_blocking_document_never_delegates_a_resource_load(qt_app):
+    document = desktop.ResourceBlockingDocument()
+    assert (
+        document.loadResource(0, desktop.QUrl("https://example.invalid/image")) is None
+    )
+    assert document.resource_requested
+
+
+def test_late_resource_observation_falls_back_during_resize_and_paint(qt_app):
+    source = "# Safe initially\n\nThis becomes plain text if Qt asks for a resource."
+    body = response_for(source, qt_app)
+    document = body.document()
+    assert isinstance(document, desktop.ResourceBlockingDocument)
+    assert not body._showing_plain_text
+    document.resource_requested = True  # Controlled stand-in for a late Qt lookup.
+    body.resize(500, 200)
+    body.repaint()
+    qt_app.processEvents()
+    assert body._showing_plain_text
+    assert body.resource_request_observed
+    assert body.toPlainText() == source
+    body.close()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "```\n" + "x" * 1200 + "\n```",
+        "```\n" + "long words " * 200 + "\n```",
+        "Text before\n\n```\n" + "x" * 1200 + "\n```\n\nText after",
+    ],
+)
+def test_oversized_code_uses_exact_plain_text_fallback(qt_app, source):
+    body = response_for(source, qt_app, width=430)
+    assert body._showing_plain_text
+    assert body.toPlainText() == source
+    body.selectAll()
+    body.copy()
+    assert qt_app.clipboard().text() == source
+    body.close()
+
+
+def test_table_presentation_re_evaluates_as_available_width_changes(qt_app):
+    headers = [f"Column {number}" for number in range(12)]
+    source = "| " + " | ".join(headers) + " |\n"
+    source += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+    source += "| " + " | ".join(["value"] * len(headers)) + " |"
+    body = response_for(source, qt_app, width=260)
+    assert body._showing_plain_text
+    assert body.toPlainText() == source
+    body.resize(1400, 200)
+    qt_app.processEvents()
+    assert not body._showing_plain_text
+    body.resize(260, 200)
+    qt_app.processEvents()
+    assert body._showing_plain_text
+    assert body.toPlainText() == source
+    body.close()
+
+
 def test_enter_sends_and_shift_enter_inserts_newline(monkeypatch, qt_app, server):
     window = window_for(monkeypatch, qt_app, server)
     _, received, _, _ = server
@@ -186,7 +317,7 @@ def test_two_independent_sends_and_whitespace(monkeypatch, qt_app, server):
     window.close()
 
 
-def test_messages_are_separate_plain_text_units_in_chronological_order(
+def test_messages_are_separate_units_in_chronological_order(
     monkeypatch, qt_app, server
 ):
     window = window_for(monkeypatch, qt_app, server)
@@ -199,7 +330,7 @@ def test_messages_are_separate_plain_text_units_in_chronological_order(
     until(qt_app, lambda: window.send_button.isEnabled())
     assert presented_messages(window) == [
         ("user", "You", "First request\nwith another line"),
-        ("hac", "Home AI Cluster", "First response\nwith another line"),
+        ("hac", "Home AI Cluster", "First response with another line"),
         ("user", "You", "Second request"),
         ("hac", "Home AI Cluster", "Second response"),
     ]
@@ -229,15 +360,12 @@ def test_html_looking_text_is_presented_literally(monkeypatch, qt_app, server):
     window.close()
 
 
-def test_hac_responses_have_literal_text_selection_and_proportional_spacing(
+def test_hac_responses_render_markdown_with_selection_and_proportional_spacing(
     monkeypatch, qt_app, server
 ):
     window = window_for(monkeypatch, qt_app, server)
     _, _, plan, _ = server
-    response = (
-        "# This is not a heading\n\n"
-        "<em>This is not markup</em> and **these are literal characters**. " * 6
-    )
+    response = "# Heading\n\n**bold** and *italic* with `code`"
     plan["body"] = result_body(content=response)
     send(window, "Show literal response")
     until(qt_app, lambda: window.send_button.isEnabled())
@@ -248,7 +376,8 @@ def test_hac_responses_have_literal_text_selection_and_proportional_spacing(
         if frame.objectName() == "chat-message-hac"
     )
     body = response_body(frame)
-    assert body.toPlainText() == response
+    assert body.toPlainText() == "Heading\nbold and italic with code"
+    assert body.toHtml() != response
     assert body.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert body.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert body.document().firstBlock().blockFormat().lineHeight() == 130
@@ -262,7 +391,7 @@ def test_hac_responses_have_literal_text_selection_and_proportional_spacing(
 
     body.selectAll()
     body.copy()
-    assert qt_app.clipboard().text() == response
+    assert qt_app.clipboard().text() == body.toPlainText()
     window.close()
 
 
@@ -539,7 +668,7 @@ def test_long_response_remains_fully_allocated_and_scrollable_after_resizing(
         if frame.objectName() == "chat-message-hac"
     )
     body = response_body(frame)
-    assert body.toPlainText() == response
+    assert final_line in body.toPlainText()
 
     for width, height in (
         (600, 500),
