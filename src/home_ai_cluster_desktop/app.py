@@ -5,7 +5,13 @@ import json
 import sys
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QPalette, QTextBlockFormat, QTextCursor, QTextOption
+from PySide6.QtGui import (
+    QPalette,
+    QTextBlockFormat,
+    QTextCursor,
+    QTextDocument,
+    QTextOption,
+)
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkProxy,
@@ -32,8 +38,22 @@ CAPABILITIES_URL = "http://127.0.0.1:25042/diagnostics/caller-routable-capabilit
 CAPABILITY_WAIT_MS = 5000
 
 
+class ResourceBlockingDocument(QTextDocument):
+    """A document that records and refuses every document resource request."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.resource_requested = False
+
+    def loadResource(self, resource_type, name):  # noqa: N802 - Qt override
+        self.resource_requested = True
+        # Deliberately do not call QTextDocument.loadResource(): HAC output is
+        # untrusted presentation data and no document-driven resource is allowed.
+        return None
+
+
 class HacResponseBody(QTextEdit):
-    """Plain-text HAC response presentation with proportional line spacing."""
+    """Safely present one transient HAC response with proportional line spacing."""
 
     def __init__(self, message: str) -> None:
         super().__init__()
@@ -46,32 +66,170 @@ class HacResponseBody(QTextEdit):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        self.document().setDocumentMargin(0)
-        self.setPlainText(message)
-        cursor = QTextCursor(self.document())
+        self._original_message = message
+        self._last_available_width: int | None = None
+        self._showing_plain_text = True
+        self.resource_request_observed = False
+        self._fallback_scheduled = False
+        self._set_plain_text()
+        self._present_for_width(self._available_text_width(self.viewport().width()))
+        policy = QSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+
+    @staticmethod
+    def _available_text_width(width: int) -> int:
+        # The widget is frameless and scrollbars are always off, so its viewport
+        # is the actual text viewport. Keep a positive width for QTextDocument.
+        return max(1, width)
+
+    def _apply_line_spacing(self, document: QTextDocument) -> None:
+        cursor = QTextCursor(document)
         cursor.select(QTextCursor.SelectionType.Document)
         line_format = QTextBlockFormat()
         line_format.setLineHeight(
             130, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value
         )
         cursor.mergeBlockFormat(line_format)
-        policy = QSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        policy.setHeightForWidth(True)
-        self.setSizePolicy(policy)
+
+    def _new_document(self) -> ResourceBlockingDocument:
+        document = ResourceBlockingDocument(self)
+        document.setDocumentMargin(0)
+        return document
+
+    def _set_plain_text(self) -> None:
+        document = self._new_document()
+        document.setPlainText(self._original_message)
+        self._apply_line_spacing(document)
+        self.setDocument(document)
+        self._showing_plain_text = True
+
+    def _set_markdown_if_safe(self, available_width: int) -> None:
+        document = self._new_document()
+        document.setMarkdown(
+            self._original_message,
+            QTextDocument.MarkdownFeature.MarkdownDialectGitHub
+            | QTextDocument.MarkdownFeature.MarkdownNoHTML,
+        )
+        self._apply_line_spacing(document)
+        document.setTextWidth(available_width)
+        laid_out_width = document.size().width()
+        if document.resource_requested or laid_out_width > available_width + 0.5:
+            self.resource_request_observed |= document.resource_requested
+            self._set_plain_text()
+            return
+        # Only attach a candidate after parsing and layout have been checked.
+        # Attachment can itself cause Qt to lay out the document again.
+        self.setDocument(document)
+        attached_width = self._available_text_width(self.viewport().width())
+        if document.resource_requested:
+            self.resource_request_observed = True
+            self._set_plain_text()
+            return
+        if attached_width != available_width:
+            # QTextEdit may establish its final viewport width as it receives
+            # the document. Reprepare against that actual width before showing
+            # the candidate rather than comparing mismatched measurements.
+            self._last_available_width = attached_width
+            self._set_markdown_if_safe(attached_width)
+            return
+        laid_out_width = document.size().width()
+        if document.resource_requested or laid_out_width > available_width + 0.5:
+            self.resource_request_observed |= document.resource_requested
+            self._set_plain_text()
+            return
+        self._showing_plain_text = False
+
+    def _present_for_width(self, available_width: int) -> None:
+        if available_width <= 1:
+            # Layout may query an as-yet-unallocated widget at width zero. It
+            # cannot establish a safe Markdown presentation; defer the choice
+            # until the real text viewport exists.
+            self._last_available_width = None
+            if not self._showing_plain_text:
+                self._set_plain_text()
+            return
+        document = self.document()
+        if (
+            not self._showing_plain_text
+            and isinstance(document, ResourceBlockingDocument)
+            and document.resource_requested
+        ):
+            self.resource_request_observed = True
+            self._last_available_width = available_width
+            self._set_plain_text()
+            return
+        if available_width == self._last_available_width:
+            if (
+                isinstance(document, ResourceBlockingDocument)
+                and document.resource_requested
+            ):
+                self._set_plain_text()
+            return
+        self._last_available_width = available_width
+        self._set_markdown_if_safe(available_width)
+
+    def _fallback_if_resource_requested(self) -> bool:
+        document = self.document()
+        if (
+            not self._showing_plain_text
+            and isinstance(document, ResourceBlockingDocument)
+            and document.resource_requested
+        ):
+            self.resource_request_observed = True
+            self._set_plain_text()
+            self.updateGeometry()
+            return True
+        return False
+
+    def _schedule_resource_fallback(self) -> None:
+        if self._fallback_scheduled:
+            return
+        self._fallback_scheduled = True
+        QTimer.singleShot(0, self._apply_scheduled_resource_fallback)
+
+    def _apply_scheduled_resource_fallback(self) -> None:
+        self._fallback_scheduled = False
+        if self._fallback_if_resource_requested():
+            self.viewport().update()
 
     def hasHeightForWidth(self) -> bool:
         return True
 
     def heightForWidth(self, width: int) -> int:
-        self.document().setTextWidth(max(0, width))
-        return int(self.document().size().height())
+        available_width = self._available_text_width(width)
+        self._present_for_width(available_width)
+        self.document().setTextWidth(available_width)
+        height = self.document().size().height()
+        self._fallback_if_resource_requested()
+        if self._showing_plain_text:
+            self.document().setTextWidth(available_width)
+            height = self.document().size().height()
+        return int(height)
 
     def sizeHint(self) -> QSize:
         return QSize(0, self.heightForWidth(self.width()))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._present_for_width(self._available_text_width(self.viewport().width()))
+        self._fallback_if_resource_requested()
         self.updateGeometry()
+
+    def paintEvent(self, event) -> None:
+        # A resource lookup can be deferred until painting. Correct a lookup
+        # seen before paint immediately; one raised by Qt while painting is
+        # corrected on the next event-loop turn, after Qt's paint operation.
+        if self._fallback_if_resource_requested():
+            self.viewport().update()
+        super().paintEvent(event)
+        document = self.document()
+        if (
+            not self._showing_plain_text
+            and isinstance(document, ResourceBlockingDocument)
+            and document.resource_requested
+        ):
+            self._schedule_resource_fallback()
 
 
 def capability_names(result: object) -> list[str]:
