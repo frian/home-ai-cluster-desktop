@@ -24,10 +24,22 @@ delegating to Qt's default loader, including HTTP(S), file URLs, relative local
 paths, data URLs, and other resource types. Markdown images are outside the
 first version's supported rendered content: no image resource may load.
 
+If the blocking document observes any resource request, Desktop must present
+the complete original HAC response as plain text. This whole-response fallback
+uses the received string, not `toPlainText()` or `toMarkdown()`, and prevents
+an unavailable-image placeholder from silently substituting inaccessible
+original content. Resource-request detection must rely on the blocking
+document, not regular expressions or a custom Markdown parser. It applies to
+requests during parsing, layout, resizing, or painting; a late request must
+not authorize loading or continued incomplete Markdown presentation. If safe
+Markdown presentation cannot be established before exposure, Desktop must
+conservatively use the original plain-text presentation.
+
 `MarkdownNoHTML` is necessary but not sufficient for this boundary. Link text
 may be represented visually, but links must not navigate, launch applications,
 open browsers, or access local files. Mouse-only text selection remains the
-interaction mode.
+interaction mode. An ordinary displayed, non-activated Markdown link is not a
+document resource request and must not itself trigger fallback.
 
 Response content remains transient visible-widget state. Desktop must not
 persist prompts or responses by default. This presentation change creates no
@@ -47,12 +59,13 @@ available text width. Measurement must use the resource-blocking document,
 and its resulting laid-out width. The 720 px response-frame limit and
 `QTextDocument.idealWidth()` alone are not sufficient criteria.
 
-When Markdown needs more horizontal space, Desktop must display the complete
-original response as plain text. The fallback covers the whole response, uses
-the received text rather than `toPlainText()` or `toMarkdown()`, and preserves
-text, copying, wrapping, scrolling, and 130% spacing. It must never silently
-clip, truncate, transform, or partially discard response content, and must not
-add horizontal scrolling.
+Desktop must display the complete original response as plain text when either
+Markdown needs more horizontal space or the blocking document detects any
+resource request. The fallback covers the whole response, uses the received
+text rather than `toPlainText()` or `toMarkdown()`, and preserves text,
+copying, wrapping, scrolling, and 130% spacing. It must never silently clip,
+truncate, transform, or partially discard response content, and must not add
+horizontal scrolling.
 
 Desktop reevaluates presentation when effective available text width changes.
 It may switch between Markdown and original-text fallback as a window narrows
@@ -81,15 +94,15 @@ original response text.
 
 The implementation must verify ordinary Markdown rendering; disabled HTML and
 link activation; absence of document-driven network or filesystem access;
-oversized fenced-code and table detection; ordinary prose without needless
-fallback; exact original-text fallback; resize stability; preserved selection,
-copying, spacing, and vertical reachability; and no HAC networking or request
-regression. The evidence so far is bounded Qt 6.12/Linux offscreen work, not
-exhaustive cross-platform validation.
-
-## Unresolved issue
-
-The user-visible representation of blocked embedded Markdown images has not
-been decided. It needs explicit review if it creates a fidelity concern; this
-decision does not invent an image policy or broaden into a sanitization
-architecture.
+oversized fenced-code and table detection; ordinary prose and ordinary
+non-activated Markdown links without needless fallback; and exact
+original-text fallback. It must also verify that HTTPS image URLs, file URLs,
+relative filesystem paths, and data URLs each cause resource-triggered
+whole-response fallback without loading, reading, or decoding the resource;
+that requests during layout measurement, resizing, or painting remain blocked
+and fall back safely; and that no inaccessible image placeholder is silently
+presented. Resize stability, preserved selection, copying, spacing, and
+vertical reachability, plus no HAC networking or request regression, remain
+required. These tests belong to the later implementation PR. The evidence so
+far is bounded Qt 6.12/Linux offscreen work, not exhaustive cross-platform or
+timing validation.
