@@ -4,8 +4,8 @@ import argparse
 import json
 import sys
 
-from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QPalette, QTextBlockFormat, QTextCursor, QTextOption
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkProxy,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +30,48 @@ from PySide6.QtWidgets import (
 CHAT_URL = "http://127.0.0.1:25042/v1/chat"
 CAPABILITIES_URL = "http://127.0.0.1:25042/diagnostics/caller-routable-capabilities"
 CAPABILITY_WAIT_MS = 5000
+
+
+class HacResponseBody(QTextEdit):
+    """Plain-text HAC response presentation with proportional line spacing."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self.setObjectName("chat-message-body")
+        self.setReadOnly(True)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet("background: transparent;")
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.document().setDocumentMargin(0)
+        self.setPlainText(message)
+        cursor = QTextCursor(self.document())
+        cursor.select(QTextCursor.SelectionType.Document)
+        line_format = QTextBlockFormat()
+        line_format.setLineHeight(
+            130, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value
+        )
+        cursor.mergeBlockFormat(line_format)
+        policy = QSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        self.document().setTextWidth(max(0, width))
+        return int(self.document().size().height())
+
+    def sizeHint(self) -> QSize:
+        return QSize(0, self.heightForWidth(self.width()))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.updateGeometry()
 
 
 def capability_names(result: object) -> list[str]:
@@ -250,16 +293,21 @@ class ChatWindow(QMainWindow):
         sender_label = QLabel(sender)
         sender_label.setObjectName("chat-message-sender")
         sender_label.setTextFormat(Qt.TextFormat.PlainText)
-        body_label = QLabel(message)
-        body_label.setObjectName("chat-message-body")
-        body_label.setTextFormat(Qt.TextFormat.PlainText)
-        body_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        body_label.setWordWrap(True)
-        body_policy = QSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
-        )
-        body_policy.setHeightForWidth(True)
-        body_label.setSizePolicy(body_policy)
+        if kind == "hac":
+            body_label = HacResponseBody(message)
+        else:
+            body_label = QLabel(message)
+            body_label.setObjectName("chat-message-body")
+            body_label.setTextFormat(Qt.TextFormat.PlainText)
+            body_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            body_label.setWordWrap(True)
+            body_policy = QSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            )
+            body_policy.setHeightForWidth(True)
+            body_label.setSizePolicy(body_policy)
         message_layout.addWidget(sender_label)
         message_layout.addWidget(body_label)
 
