@@ -704,6 +704,8 @@ def test_chat_window_re_evaluates_overflow_presentation_at_real_response_widths(
             qt_app.processEvents()
         candidate = desktop.ResourceBlockingDocument()
         candidate.setDocumentMargin(0)
+        candidate.setDefaultFont(body.document().defaultFont())
+        candidate.setDefaultTextOption(body.document().defaultTextOption())
         candidate.setMarkdown(
             source,
             QTextDocument.MarkdownFeature.MarkdownDialectGitHub
@@ -713,6 +715,21 @@ def test_chat_window_re_evaluates_overflow_presentation_at_real_response_widths(
         candidate_widths.append(candidate.size().width())
         viewport_widths.append(body.viewport().width())
         presentations.append(body._showing_plain_text)
+        print(
+            {
+                "window": (window.width(), window.height()),
+                "viewport": body.viewport().width(),
+                "candidate_width": candidate_widths[-1],
+                "candidate_ideal_width": candidate.idealWidth(),
+                "document_width": body.document().size().width(),
+                "document_text_width": body.document().textWidth(),
+                "cached_width": body._last_available_width,
+                "plain": body._showing_plain_text,
+                "resource": body.resource_request_observed,
+                "candidate_font": candidate.defaultFont().toString(),
+                "document_font": body.document().defaultFont().toString(),
+            }
+        )
         assert body.viewport().width() > 0
         assert body.horizontalScrollBar().maximum() == 0
         assert window.conversation.horizontalScrollBar().maximum() == 0
