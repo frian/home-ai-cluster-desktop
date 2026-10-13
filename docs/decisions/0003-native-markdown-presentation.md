@@ -1,6 +1,6 @@
 # 0003: Native Markdown presentation
 
-Status: Proposed
+Status: Accepted for Desktop implementation
 
 ## Decision
 
