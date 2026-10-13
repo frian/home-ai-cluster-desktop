@@ -70,6 +70,7 @@ class HacResponseBody(QTextEdit):
         self._last_available_width: int | None = None
         self._showing_plain_text = True
         self.resource_request_observed = False
+        self._fallback_scheduled = False
         self._set_plain_text()
         self._present_for_width(self._available_text_width(self.viewport().width()))
         policy = QSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -98,14 +99,13 @@ class HacResponseBody(QTextEdit):
 
     def _set_plain_text(self) -> None:
         document = self._new_document()
-        self.setDocument(document)
-        self.setPlainText(self._original_message)
+        document.setPlainText(self._original_message)
         self._apply_line_spacing(document)
+        self.setDocument(document)
         self._showing_plain_text = True
 
     def _set_markdown_if_safe(self, available_width: int) -> None:
         document = self._new_document()
-        self.setDocument(document)
         document.setMarkdown(
             self._original_message,
             QTextDocument.MarkdownFeature.MarkdownDialectGitHub
@@ -118,9 +118,37 @@ class HacResponseBody(QTextEdit):
             self.resource_request_observed |= document.resource_requested
             self._set_plain_text()
             return
+        # Only attach a candidate after parsing and layout have been checked.
+        # Attachment can itself cause Qt to lay out the document again.
+        self.setDocument(document)
+        attached_width = self._available_text_width(self.viewport().width())
+        if document.resource_requested:
+            self.resource_request_observed = True
+            self._set_plain_text()
+            return
+        if attached_width != available_width:
+            # QTextEdit may establish its final viewport width as it receives
+            # the document. Reprepare against that actual width before showing
+            # the candidate rather than comparing mismatched measurements.
+            self._last_available_width = attached_width
+            self._set_markdown_if_safe(attached_width)
+            return
+        laid_out_width = document.size().width()
+        if document.resource_requested or laid_out_width > available_width + 0.5:
+            self.resource_request_observed |= document.resource_requested
+            self._set_plain_text()
+            return
         self._showing_plain_text = False
 
     def _present_for_width(self, available_width: int) -> None:
+        if available_width <= 1:
+            # Layout may query an as-yet-unallocated widget at width zero. It
+            # cannot establish a safe Markdown presentation; defer the choice
+            # until the real text viewport exists.
+            self._last_available_width = None
+            if not self._showing_plain_text:
+                self._set_plain_text()
+            return
         document = self.document()
         if (
             not self._showing_plain_text
@@ -154,6 +182,17 @@ class HacResponseBody(QTextEdit):
             return True
         return False
 
+    def _schedule_resource_fallback(self) -> None:
+        if self._fallback_scheduled:
+            return
+        self._fallback_scheduled = True
+        QTimer.singleShot(0, self._apply_scheduled_resource_fallback)
+
+    def _apply_scheduled_resource_fallback(self) -> None:
+        self._fallback_scheduled = False
+        if self._fallback_if_resource_requested():
+            self.viewport().update()
+
     def hasHeightForWidth(self) -> bool:
         return True
 
@@ -161,8 +200,12 @@ class HacResponseBody(QTextEdit):
         available_width = self._available_text_width(width)
         self._present_for_width(available_width)
         self.document().setTextWidth(available_width)
+        height = self.document().size().height()
         self._fallback_if_resource_requested()
-        return int(self.document().size().height())
+        if self._showing_plain_text:
+            self.document().setTextWidth(available_width)
+            height = self.document().size().height()
+        return int(height)
 
     def sizeHint(self) -> QSize:
         return QSize(0, self.heightForWidth(self.width()))
@@ -174,13 +217,19 @@ class HacResponseBody(QTextEdit):
         self.updateGeometry()
 
     def paintEvent(self, event) -> None:
-        # A resource lookup can be deferred until painting. Check before and
-        # after Qt paints so an unavailable placeholder cannot become stable.
+        # A resource lookup can be deferred until painting. Correct a lookup
+        # seen before paint immediately; one raised by Qt while painting is
+        # corrected on the next event-loop turn, after Qt's paint operation.
         if self._fallback_if_resource_requested():
             self.viewport().update()
         super().paintEvent(event)
-        if self._fallback_if_resource_requested():
-            self.viewport().update()
+        document = self.document()
+        if (
+            not self._showing_plain_text
+            and isinstance(document, ResourceBlockingDocument)
+            and document.resource_requested
+        ):
+            self._schedule_resource_fallback()
 
 
 def capability_names(result: object) -> list[str]:

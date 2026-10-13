@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
-from PySide6.QtGui import QTextCursor  # noqa: E402
+from PySide6.QtGui import QTextCursor, QTextDocument  # noqa: E402
 from PySide6.QtNetwork import QNetworkProxy, QNetworkReply  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QTextEdit  # noqa: E402
@@ -215,7 +215,29 @@ def test_blocking_document_never_delegates_a_resource_load(qt_app):
     assert document.resource_requested
 
 
-def test_late_resource_observation_falls_back_during_resize_and_paint(qt_app):
+def test_layout_resource_request_falls_back_before_markdown_is_presented(qt_app):
+    source = "Before\n\n![alternative](https://example.invalid/image.png)\n\nAfter"
+    document = desktop.ResourceBlockingDocument()
+    document.setDocumentMargin(0)
+    document.setMarkdown(
+        source,
+        QTextDocument.MarkdownFeature.MarkdownDialectGitHub
+        | QTextDocument.MarkdownFeature.MarkdownNoHTML,
+    )
+    document.setTextWidth(400)
+    assert not document.resource_requested
+    document.size()  # Qt requests the image during the forced layout.
+    assert document.resource_requested
+
+    body = response_for(source, qt_app, width=400)
+    assert body.resource_request_observed
+    assert body._showing_plain_text
+    assert body.toPlainText() == source
+    assert body.heightForWidth(400) == int(body.document().size().height())
+    body.close()
+
+
+def test_late_resource_observation_falls_back_during_resize(qt_app):
     source = "# Safe initially\n\nThis becomes plain text if Qt asks for a resource."
     body = response_for(source, qt_app)
     document = body.document()
@@ -223,6 +245,19 @@ def test_late_resource_observation_falls_back_during_resize_and_paint(qt_app):
     assert not body._showing_plain_text
     document.resource_requested = True  # Controlled stand-in for a late Qt lookup.
     body.resize(500, 200)
+    qt_app.processEvents()
+    assert body._showing_plain_text
+    assert body.resource_request_observed
+    assert body.toPlainText() == source
+    body.close()
+
+
+def test_late_resource_observation_before_paint_falls_back(qt_app):
+    source = "# Safe initially\n\nThis becomes plain text if Qt asks for a resource."
+    body = response_for(source, qt_app)
+    document = body.document()
+    assert isinstance(document, desktop.ResourceBlockingDocument)
+    document.resource_requested = True  # Controlled pre-paint observation.
     body.repaint()
     qt_app.processEvents()
     assert body._showing_plain_text
@@ -641,6 +676,52 @@ def test_conversation_column_reflows_without_horizontal_overflow(
                 kind = frame.objectName().removeprefix("chat-message-")
                 assert frame.width() <= {"user": 600, "hac": 720, "status": 480}[kind]
                 assert frame.geometry().right() < window._conversation_column.width()
+    window.close()
+
+
+def test_chat_window_re_evaluates_table_presentation_at_real_response_widths(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, _ = server
+    headers = [f"Column {number}" for number in range(11)]
+    source = "| " + " | ".join(headers) + " |\n"
+    source += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+    source += "| " + " | ".join(["value"] * len(headers)) + " |"
+    plan["body"] = result_body(content=source)
+    send(window, "Show responsive table")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    frame = next(
+        frame
+        for frame in window.conversation.findChildren(QFrame)
+        if frame.objectName() == "chat-message-hac"
+    )
+    body = response_body(frame)
+    presentations = []
+
+    for width, height in ((430, 500), (600, 500), (1100, 800), (1600, 900), (430, 500)):
+        window.resize(width, height)
+        for _ in range(20):
+            qt_app.processEvents()
+        presentations.append(body._showing_plain_text)
+        assert body.viewport().width() > 0
+        assert body.horizontalScrollBar().maximum() == 0
+        assert window.conversation.horizontalScrollBar().maximum() == 0
+        assert frame.width() <= 720
+        assert frame.geometry().right() < window._conversation_column.width()
+        assert len(received) == 1
+
+    assert presentations[0]
+    assert not presentations[2]
+    assert not presentations[3]
+    assert presentations[4]
+    assert body.toPlainText() == source
+    scrollbar = window.conversation.verticalScrollBar()
+    scrollbar.setValue(scrollbar.maximum())
+    qt_app.processEvents()
+    assert body.mapTo(window.conversation.viewport(), body.rect().bottomLeft()).y() < (
+        window.conversation.viewport().height()
+    )
     window.close()
 
 
