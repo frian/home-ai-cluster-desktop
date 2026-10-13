@@ -12,7 +12,7 @@ from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtGui import QTextCursor  # noqa: E402
 from PySide6.QtNetwork import QNetworkProxy, QNetworkReply  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QFrame, QLabel  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QTextEdit  # noqa: E402
 
 from home_ai_cluster_desktop import app as desktop  # noqa: E402
 
@@ -115,10 +115,25 @@ def presented_messages(window):
             (
                 kind,
                 frame.findChild(QLabel, "chat-message-sender").text(),
-                frame.findChild(QLabel, "chat-message-body").text(),
+                message_body(frame),
             )
         )
     return messages
+
+
+def message_body(frame):
+    label = frame.findChild(QLabel, "chat-message-body")
+    if label is not None:
+        return label.text()
+    response = frame.findChild(QTextEdit, "chat-message-body")
+    assert response is not None
+    return response.toPlainText()
+
+
+def response_body(frame):
+    body = frame.findChild(QTextEdit, "chat-message-body")
+    assert body is not None
+    return body
 
 
 def test_enter_sends_and_shift_enter_inserts_newline(monkeypatch, qt_app, server):
@@ -207,7 +222,47 @@ def test_html_looking_text_is_presented_literally(monkeypatch, qt_app, server):
             "chat-message-status",
         }:
             body = frame.findChild(QLabel, "chat-message-body")
-            assert body.textFormat() == Qt.TextFormat.PlainText
+            if body is not None:
+                assert body.textFormat() == Qt.TextFormat.PlainText
+            else:
+                assert response_body(frame).toPlainText() == literal
+    window.close()
+
+
+def test_hac_responses_have_literal_text_selection_and_proportional_spacing(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    response = (
+        "# This is not a heading\n\n"
+        "<em>This is not markup</em> and **these are literal characters**. " * 6
+    )
+    plan["body"] = result_body(content=response)
+    send(window, "Show literal response")
+    until(qt_app, lambda: window.send_button.isEnabled())
+
+    frame = next(
+        frame
+        for frame in window.conversation.findChildren(QFrame)
+        if frame.objectName() == "chat-message-hac"
+    )
+    body = response_body(frame)
+    assert body.toPlainText() == response
+    assert body.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert body.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert body.document().firstBlock().blockFormat().lineHeight() == 130
+
+    baseline = QTextEdit()
+    baseline.setFont(body.font())
+    baseline.setPlainText(response)
+    baseline.document().setDocumentMargin(0)
+    baseline.document().setTextWidth(body.width())
+    assert body.heightForWidth(body.width()) > baseline.document().size().height()
+
+    body.selectAll()
+    body.copy()
+    assert qt_app.clipboard().text() == response
     window.close()
 
 
@@ -470,10 +525,16 @@ def test_long_response_remains_fully_allocated_and_scrollable_after_resizing(
         for frame in window.conversation.findChildren(QFrame)
         if frame.objectName() == "chat-message-hac"
     )
-    body = frame.findChild(QLabel, "chat-message-body")
-    assert body.text() == response
+    body = response_body(frame)
+    assert body.toPlainText() == response
 
-    for width, height in ((600, 500), (430, 500), (1100, 800), (430, 500)):
+    for width, height in (
+        (600, 500),
+        (430, 500),
+        (1100, 800),
+        (1600, 900),
+        (430, 500),
+    ):
         window.resize(width, height)
         for _ in range(20):
             qt_app.processEvents()

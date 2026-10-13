@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtNetwork import QNetworkProxy  # noqa: E402
-from PySide6.QtWidgets import QApplication, QFrame, QLabel  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QTextEdit  # noqa: E402
 
 from home_ai_cluster_desktop import app as desktop  # noqa: E402
 
@@ -108,12 +108,15 @@ def presented_messages(window):
         kind = frame.objectName().removeprefix("chat-message-")
         if kind not in {"user", "hac", "status"}:
             continue
+        body = frame.findChild(QLabel, "chat-message-body")
+        if body is None:
+            response = frame.findChild(QTextEdit, "chat-message-body")
+            assert response is not None
+            text = response.toPlainText()
+        else:
+            text = body.text()
         messages.append(
-            (
-                kind,
-                frame.findChild(QLabel, "chat-message-sender").text(),
-                frame.findChild(QLabel, "chat-message-body").text(),
-            )
+            (kind, frame.findChild(QLabel, "chat-message-sender").text(), text)
         )
     return messages
 
