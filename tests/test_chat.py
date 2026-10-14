@@ -664,6 +664,124 @@ def test_stopped_wait_late_reply_cannot_overwrite_newer_request(
     window.close()
 
 
+def test_successful_context_survives_stop_waiting_and_excludes_abandoned_turn(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, gate = server
+    message_a = "context-A-4f1a"
+    response_a = "response-A-9c73"
+    message_b = "abandoned-B-2d86"
+    message_c = "context-C-7be5"
+    response_c = "response-C-1a42"
+    plan["post_waits"] = [False, True, False]
+    plan["post_bodies"] = [
+        result_body(content=response_a),
+        result_body(content="late response for B"),
+        result_body(content=response_c),
+    ]
+
+    send(window, message_a)
+    until(qt_app, lambda: len(received) == 1 and window.send_button.isEnabled())
+    assert window._successful_messages == [
+        {"role": "user", "content": message_a},
+        {"role": "assistant", "content": response_a},
+    ]
+
+    send(window, message_b)
+    until(qt_app, lambda: len(received) == 2 and window._reply is not None)
+    window.stop_waiting_button.click()
+    assert window.send_button.isEnabled()
+    assert (
+        "status",
+        "Request status",
+        "Stopped waiting for the response.",
+    ) in presented_messages(window)
+
+    send(window, message_c)
+    until(qt_app, lambda: len(received) == 3 and window.send_button.isEnabled())
+    assert received[2][1]["messages"] == [
+        {"role": "user", "content": message_a},
+        {"role": "assistant", "content": response_a},
+        {"role": "user", "content": message_c},
+    ]
+    assert window._successful_messages == [
+        {"role": "user", "content": message_a},
+        {"role": "assistant", "content": response_a},
+        {"role": "user", "content": message_c},
+        {"role": "assistant", "content": response_c},
+    ]
+    before_late_result = presented_messages(window)
+
+    gate.set()
+    until(qt_app, lambda: plan["completed"] == 3)
+    for _ in range(5):
+        qt_app.processEvents()
+    assert len(received) == 3
+    assert presented_messages(window) == before_late_result
+    assert window._successful_messages == [
+        {"role": "user", "content": message_a},
+        {"role": "assistant", "content": response_a},
+        {"role": "user", "content": message_c},
+        {"role": "assistant", "content": response_c},
+    ]
+    assert window._reply is None
+    assert window.send_button.isEnabled()
+    window.close()
+
+
+def test_timeout_then_new_conversation_discards_old_request_and_context(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, gate = server
+    timed_out_message = "timed-out-4b28"
+    old_response = "late timed-out response"
+    draft = "preserved draft-91d6"
+    fresh_message = "fresh-after-reset-6ca0"
+    plan["post_waits"] = [True, False]
+    plan["post_bodies"] = [
+        result_body(content=old_response),
+        result_body(content="fresh response"),
+    ]
+
+    send(window, timed_out_message)
+    until(qt_app, lambda: len(received) == 1 and window._reply is not None)
+    window._timed_out()
+    assert window._reply is None
+    assert window.send_button.isEnabled()
+    assert window.new_conversation_button.isEnabled()
+    assert (
+        "status",
+        "Request status",
+        "The request timed out.",
+    ) in presented_messages(window)
+
+    window.input.setPlainText(draft)
+    window.new_conversation_button.click()
+    assert window._successful_messages == []
+    assert presented_messages(window) == []
+    assert window.input.toPlainText() == draft
+    assert window.send_button.isEnabled()
+
+    gate.set()
+    until(qt_app, lambda: plan["completed"] == 1)
+    for _ in range(5):
+        qt_app.processEvents()
+    assert presented_messages(window) == []
+    assert window._successful_messages == []
+    assert window.input.toPlainText() == draft
+    assert window._reply is None
+    assert window.send_button.isEnabled()
+
+    send(window, fresh_message)
+    until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
+    assert received[1][1]["messages"] == [
+        {"role": "user", "content": fresh_message},
+    ]
+    window.close()
+
+
 @pytest.mark.parametrize(
     ("status", "body", "expected"),
     [
