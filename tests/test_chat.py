@@ -105,6 +105,83 @@ def send(window, message):
     window.send_button.click()
 
 
+def test_compact_chat_action_row_initial_layout(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    qt_app.processEvents()
+
+    assert window.new_conversation_button.isVisible()
+    assert window.new_conversation_button.isEnabled()
+    assert window.send_button.isVisible()
+    assert window.send_button.isEnabled()
+    assert not window.stop_waiting_button.isVisible()
+    assert not window.waiting_label.isVisible()
+    assert window.action_row.indexOf(window.new_conversation_button) >= 0
+    assert window.action_row.indexOf(window.waiting_label) >= 0
+    assert window.action_row.indexOf(window.send_button) >= 0
+    assert window.action_row.indexOf(window.stop_waiting_button) >= 0
+    assert window.new_conversation_button.x() < window.send_button.x()
+    assert window.new_conversation_button.width() < window.centralWidget().width()
+    assert window.send_button.width() < window.centralWidget().width()
+    assert window.send_button.geometry().right() > window.centralWidget().width() // 2
+    window.close()
+
+
+def test_compact_chat_action_row_pending_request(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, _ = server
+    plan["wait"] = True
+
+    send(window, "Pending")
+    until(qt_app, lambda: len(received) == 1 and window._reply is not None)
+
+    assert window.new_conversation_button.isVisible()
+    assert not window.new_conversation_button.isEnabled()
+    assert not window.send_button.isVisible()
+    assert window.stop_waiting_button.isVisible()
+    assert window.stop_waiting_button.isEnabled()
+    assert window.waiting_label.isVisible()
+    assert window.waiting_label.x() < window.stop_waiting_button.x()
+    window.stop_waiting_button.click()
+    window.close()
+
+
+def test_compact_chat_action_row_stop_waiting_restores_normal_controls(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, _ = server
+    plan["wait"] = True
+
+    send(window, "Pending")
+    until(qt_app, lambda: len(received) == 1 and window._reply is not None)
+    window.stop_waiting_button.click()
+
+    assert window.new_conversation_button.isVisible()
+    assert window.new_conversation_button.isEnabled()
+    assert window.send_button.isVisible()
+    assert window.send_button.isEnabled()
+    assert not window.stop_waiting_button.isVisible()
+    assert not window.waiting_label.isVisible()
+    window.close()
+
+
+def test_compact_chat_action_row_completed_request_restores_normal_controls(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, _, _ = server
+
+    send(window, "Complete")
+    until(qt_app, lambda: len(received) == 1 and window.send_button.isEnabled())
+
+    assert window.new_conversation_button.isVisible()
+    assert window.new_conversation_button.isEnabled()
+    assert window.send_button.isVisible()
+    assert not window.stop_waiting_button.isVisible()
+    assert not window.waiting_label.isVisible()
+    window.close()
+
+
 def presented_messages(window):
     messages = []
     for frame in window.conversation.findChildren(QFrame):
