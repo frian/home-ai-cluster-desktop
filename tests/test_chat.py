@@ -999,6 +999,92 @@ def test_success_returns_focus_and_scrolls_to_newest_content(
     window.close()
 
 
+def test_user_message_bubbles_follow_short_and_medium_content(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    messages = ("Hello!", "What is democracy?")
+    plan["post_bodies"] = [result_body(content="First"), result_body(content="Second")]
+    window.resize(1600, 900)
+
+    for message in messages:
+        send(window, message)
+        until(qt_app, lambda: window.send_button.isEnabled())
+
+    viewport = window.conversation.viewport()
+    column = window._conversation_column
+    user_frames = [
+        frame
+        for frame in window.conversation.findChildren(QFrame)
+        if frame.objectName() == "chat-message-user"
+    ]
+    assert len(user_frames) == len(messages)
+    for frame, message in zip(user_frames, messages, strict=True):
+        body = frame.findChild(QLabel, "chat-message-body")
+        sender = frame.findChild(QLabel, "chat-message-sender")
+        assert body is not None and body.text() == message
+        assert sender is not None and sender.text() == "You"
+        assert frame.width() < 300
+        frame_right = frame.mapTo(viewport, frame.rect().topRight()).x()
+        column_right = column.mapTo(viewport, column.rect().topRight()).x()
+        assert abs(frame_right - column_right) <= 1
+    window.close()
+
+
+def test_long_and_multiline_user_bubbles_wrap_and_preserve_content(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    short_message = "Hello!"
+    long_message = "A complete user message should wrap naturally. " * 40
+    multiline_message = "First line\nSecond line\nThird line"
+    plan["post_bodies"] = [result_body(content="Done")] * 3
+
+    for message in (short_message, long_message, multiline_message):
+        send(window, message)
+        until(qt_app, lambda: window.send_button.isEnabled())
+
+    user_frames = [
+        frame
+        for frame in window.conversation.findChildren(QFrame)
+        if frame.objectName() == "chat-message-user"
+    ]
+    short_frame, long_frame, multiline_frame = user_frames
+    long_body = long_frame.findChild(QLabel, "chat-message-body")
+    multiline_body = multiline_frame.findChild(QLabel, "chat-message-body")
+    assert long_body is not None and long_body.text() == long_message
+    assert multiline_body is not None and multiline_body.text() == multiline_message
+    assert short_frame.width() < long_frame.width() <= 600
+    assert long_body.height() > long_body.fontMetrics().height()
+    assert multiline_body.height() >= 3 * multiline_body.fontMetrics().height()
+    window.close()
+
+
+def test_user_bubbles_reflow_inside_the_conversation_column(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    message = "A user message that should reflow as the window changes size. " * 30
+    window._append_conversation("You", message, "user")
+    frame = next(
+        frame
+        for frame in window.conversation.findChildren(QFrame)
+        if frame.objectName() == "chat-message-user"
+    )
+
+    for width, height in ((430, 500), (600, 500), (1100, 800), (430, 500)):
+        window.resize(width, height)
+        qt_app.processEvents()
+        column = window._conversation_column
+        frame_right = frame.mapTo(column, frame.rect().topRight()).x()
+        assert frame.width() <= 600
+        assert frame_right < column.width()
+        assert window.conversation.horizontalScrollBar().maximum() == 0
+    window.close()
+
+
 def test_conversation_is_centered_and_bounded_at_wide_widths(
     monkeypatch, qt_app, server
 ):

@@ -460,7 +460,8 @@ class ChatWindow(QMainWindow):
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.StyledPanel)
         frame.setObjectName(f"chat-message-{kind}")
-        frame.setMaximumWidth({"user": 600, "hac": 720, "status": 480}[kind])
+        maximum_width = {"user": 600, "hac": 720, "status": 480}[kind]
+        frame.setMaximumWidth(maximum_width)
         frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         palette = frame.palette()
         if kind == "user":
@@ -501,6 +502,22 @@ class ChatWindow(QMainWindow):
             body_label.setSizePolicy(body_policy)
         message_layout.addWidget(sender_label)
         message_layout.addWidget(body_label)
+        if kind == "user":
+            horizontal_margins = (
+                message_layout.contentsMargins().left()
+                + message_layout.contentsMargins().right()
+                + 2 * frame.frameWidth()
+            )
+            content_width = max(
+                sender_label.sizeHint().width(),
+                max(
+                    body_label.fontMetrics().horizontalAdvance(line)
+                    for line in message.splitlines() or [""]
+                ),
+            )
+            frame.setMaximumWidth(
+                min(maximum_width, content_width + horizontal_margins)
+            )
 
         row = QWidget()
         row_layout = QHBoxLayout(row)
