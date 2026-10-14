@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 CHAT_URL = "http://127.0.0.1:25042/v1/chat"
 CAPABILITIES_URL = "http://127.0.0.1:25042/diagnostics/caller-routable-capabilities"
 CAPABILITY_WAIT_MS = 5000
+CHAT_CONTEXT_LIMIT_BYTES = 65_536
 
 
 class ResourceBlockingDocument(QTextDocument):
@@ -316,6 +317,8 @@ class ChatWindow(QMainWindow):
         self.input.installEventFilter(self)
         self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self.send)
+        self.new_conversation_button = QPushButton("New conversation")
+        self.new_conversation_button.clicked.connect(self.new_conversation)
         self.stop_waiting_button = QPushButton("Stop waiting")
         self.stop_waiting_button.clicked.connect(self.stop_waiting)
         self.stop_waiting_button.setVisible(False)
@@ -337,6 +340,7 @@ class ChatWindow(QMainWindow):
         layout.addWidget(self.input)
         layout.addWidget(self.waiting_label)
         layout.addWidget(self.stop_waiting_button)
+        layout.addWidget(self.new_conversation_button)
         layout.addWidget(self.send_button)
         central = QWidget()
         central.setLayout(layout)
@@ -345,6 +349,10 @@ class ChatWindow(QMainWindow):
         self._network = QNetworkAccessManager(self)
         self._network.setProxy(QNetworkProxy(QNetworkProxy.ProxyType.NoProxy))
         self._reply: QNetworkReply | None = None
+        self._pending_message: str | None = None
+        # This is deliberately window-local and stores original request/result
+        # strings, never presentation-widget text.
+        self._successful_messages: list[dict[str, str]] = []
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(timeout * 1000)
@@ -487,6 +495,7 @@ class ChatWindow(QMainWindow):
 
     def _set_awaiting(self, awaiting: bool) -> None:
         self.send_button.setEnabled(not awaiting)
+        self.new_conversation_button.setEnabled(not awaiting)
         self.waiting_label.setVisible(awaiting)
         self.stop_waiting_button.setVisible(awaiting)
 
@@ -501,6 +510,19 @@ class ChatWindow(QMainWindow):
         if not message.strip():
             return
 
+        messages = [*self._successful_messages, {"role": "user", "content": message}]
+        if (
+            sum(len(item["content"].encode("utf-8")) for item in messages)
+            > CHAT_CONTEXT_LIMIT_BYTES
+        ):
+            self._append_conversation(
+                "Request status",
+                "The conversation is too large to send. "
+                "Start a new conversation or shorten the message.",
+                "status",
+            )
+            return
+
         request = QNetworkRequest(QUrl(CHAT_URL))
         request.setHeader(
             QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json"
@@ -509,16 +531,30 @@ class ChatWindow(QMainWindow):
             QNetworkRequest.Attribute.RedirectPolicyAttribute,
             QNetworkRequest.RedirectPolicy.ManualRedirectPolicy,
         )
-        payload = json.dumps(
-            {"messages": [{"role": "user", "content": message}], "capability": "chat"}
-        ).encode("utf-8")
+        payload = json.dumps({"messages": messages, "capability": "chat"}).encode(
+            "utf-8"
+        )
         self._append_conversation("You", message, "user")
         self.input.clear()
         reply = self._network.post(request, payload)
         self._reply = reply
+        self._pending_message = message
         reply.finished.connect(self._finished)
         self._timer.start()
         self._set_awaiting(True)
+
+    def new_conversation(self) -> None:
+        if self._reply is not None:
+            return
+        self._successful_messages.clear()
+        while self._conversation_layout.count() > 1:
+            item = self._conversation_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._conversation_layout.activate()
+        self.input.setFocus()
 
     def stop_waiting(self) -> None:
         if self._reply is None:
@@ -526,6 +562,7 @@ class ChatWindow(QMainWindow):
         # Ending this client wait does not establish any HAC-side cancellation.
         reply = self._reply
         self._reply = None
+        self._pending_message = None
         self._timer.stop()
         reply.abort()
         self._append_conversation(
@@ -538,6 +575,7 @@ class ChatWindow(QMainWindow):
             return
         # The reply may finish later. Its completion must not affect this window.
         self._reply = None
+        self._pending_message = None
         self._append_conversation("Request status", "The request timed out.", "status")
         self._complete_interaction()
 
@@ -549,6 +587,8 @@ class ChatWindow(QMainWindow):
             reply.deleteLater()
             return
         self._reply = None
+        submitted_message = self._pending_message
+        self._pending_message = None
         self._timer.stop()
         status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
         if status is None:
@@ -564,10 +604,18 @@ class ChatWindow(QMainWindow):
             except (ValueError, TypeError, KeyError):
                 message = "Home AI Cluster returned an invalid response."
             else:
-                self._append_conversation("Home AI Cluster", content, "hac")
-                self._complete_interaction()
-                reply.deleteLater()
-                return
+                if content and submitted_message is not None:
+                    self._successful_messages.extend(
+                        [
+                            {"role": "user", "content": submitted_message},
+                            {"role": "assistant", "content": content},
+                        ]
+                    )
+                    self._append_conversation("Home AI Cluster", content, "hac")
+                    self._complete_interaction()
+                    reply.deleteLater()
+                    return
+                message = "Home AI Cluster returned an invalid response."
         self._append_conversation("Request status", message, "status")
         self._complete_interaction()
         reply.deleteLater()
