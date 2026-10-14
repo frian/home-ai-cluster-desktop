@@ -11,7 +11,9 @@ uv sync --locked
 uv run home-ai-cluster-desktop
 ```
 
-HAC must already be running at its ordinary loopback endpoint. Enter a message and click **Send**. Each click sends that message as a new Chat request; displayed messages are never sent as context. Whitespace-only input does nothing.
+HAC must already be running at its ordinary loopback endpoint. Enter a message and click **Send**. Chat is an ephemeral conversation owned only by the running Desktop window: each later request includes the successful earlier user/assistant exchanges from that window. Failed, stopped, timed-out, and invalid turns are not included in later context. Whitespace-only input does nothing.
+
+The window keeps at most 65,536 UTF-8 bytes of candidate message content; requests beyond that local bound are not sent. Choose **New conversation** to clear the visible transcript and ephemeral context while preserving any unsent input. It starts fresh without saving history.
 
 The default client wait is 120 seconds. To choose a wait from 1 to 3600 seconds for this launch:
 

@@ -328,7 +328,9 @@ def test_timeout_option():
             desktop.parse_args(["--timeout-seconds", value])
 
 
-def test_two_independent_sends_and_whitespace(monkeypatch, qt_app, server):
+def test_successful_sends_retain_complete_chronological_context(
+    monkeypatch, qt_app, server
+):
     window = window_for(monkeypatch, qt_app, server)
     _, received, _, _ = server
     send(window, "   \n")
@@ -346,8 +348,134 @@ def test_two_independent_sends_and_whitespace(monkeypatch, qt_app, server):
         ),
         (
             "/v1/chat",
-            {"messages": [{"role": "user", "content": "Second"}], "capability": "chat"},
+            {
+                "messages": [
+                    {"role": "user", "content": "First"},
+                    {"role": "assistant", "content": "Hello"},
+                    {"role": "user", "content": "Second"},
+                ],
+                "capability": "chat",
+            },
         ),
+    ]
+    window.close()
+
+
+def test_failed_and_empty_turns_do_not_enter_later_context(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, _ = server
+    plan["post_bodies"] = [
+        result_body(content="First response"),
+        b"not JSON",
+        result_body(content=""),
+        result_body(content="Final response"),
+    ]
+    for message in ("First", "Failed", "Empty", "Final"):
+        send(window, message)
+        until(qt_app, lambda: window.send_button.isEnabled())
+    assert received[-1][1]["messages"] == [
+        {"role": "user", "content": "First"},
+        {"role": "assistant", "content": "First response"},
+        {"role": "user", "content": "Final"},
+    ]
+    assert window._successful_messages == [
+        {"role": "user", "content": "First"},
+        {"role": "assistant", "content": "First response"},
+        {"role": "user", "content": "Final"},
+        {"role": "assistant", "content": "Final response"},
+    ]
+    window.close()
+
+
+def test_new_conversation_clears_window_context_but_preserves_unsent_input(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, _, _ = server
+    send(window, "First")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    window.input.setPlainText("Keep this draft")
+    window.new_conversation_button.click()
+    assert window._successful_messages == []
+    assert presented_messages(window) == []
+    assert window.input.toPlainText() == "Keep this draft"
+    send(window, "Fresh")
+    until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
+    assert received[-1][1]["messages"] == [{"role": "user", "content": "Fresh"}]
+    window.close()
+
+
+def test_new_conversation_cannot_clear_pending_request(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    plan["wait"] = True
+    send(window, "Pending")
+    until(qt_app, lambda: window._reply is not None)
+    assert not window.new_conversation_button.isEnabled()
+    window.new_conversation()
+    assert presented_messages(window) == [("user", "You", "Pending")]
+    assert window._reply is not None
+    window.stop_waiting()
+    assert window.new_conversation_button.isEnabled()
+    window.close()
+
+
+def test_new_conversation_after_stop_keeps_late_result_abandoned(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, gate = server
+    plan["wait"] = True
+    plan["body"] = result_body(content="Late response")
+    send(window, "Abandoned")
+    until(qt_app, lambda: len(received) == 1)
+    window.stop_waiting()
+    window.new_conversation()
+    assert presented_messages(window) == []
+    gate.set()
+    until(qt_app, lambda: plan["completed"] == 1)
+    for _ in range(5):
+        qt_app.processEvents()
+    assert presented_messages(window) == []
+    assert window._successful_messages == []
+    window.close()
+
+
+def test_context_bound_is_utf8_content_only_and_preserves_rejected_input(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, _, _ = server
+    exact = "é" * (desktop.CHAT_CONTEXT_LIMIT_BYTES // 2)
+    send(window, exact)
+    until(qt_app, lambda: window.send_button.isEnabled())
+    assert len(received) == 1
+    assert received[0][1]["messages"] == [{"role": "user", "content": exact}]
+    rejected = "x"
+    window.input.setPlainText(rejected)
+    window.send()
+    assert len(received) == 1
+    assert window.input.toPlainText() == rejected
+    assert window._successful_messages[0]["content"] == exact
+    assert "too large" in presented_messages(window)[-1][2]
+    window.close()
+
+
+def test_original_markdown_response_is_retained_for_next_request(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, _ = server
+    markdown = "# Heading\n\n**exact source**"
+    plan["post_bodies"] = [result_body(content=markdown), result_body(content="Done")]
+    send(window, "First")
+    until(qt_app, lambda: window.send_button.isEnabled())
+    send(window, "Second")
+    until(qt_app, lambda: len(received) == 2 and window.send_button.isEnabled())
+    assert received[1][1]["messages"] == [
+        {"role": "user", "content": "First"},
+        {"role": "assistant", "content": markdown},
+        {"role": "user", "content": "Second"},
     ]
     window.close()
 
