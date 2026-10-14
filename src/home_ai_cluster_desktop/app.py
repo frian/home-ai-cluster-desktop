@@ -37,6 +37,8 @@ CHAT_URL = "http://127.0.0.1:25042/v1/chat"
 CAPABILITIES_URL = "http://127.0.0.1:25042/diagnostics/caller-routable-capabilities"
 CAPABILITY_WAIT_MS = 5000
 CHAT_CONTEXT_LIMIT_BYTES = 65_536
+CONTENT_MAX_WIDTH = 900
+INPUT_BACKGROUND_DARKENING_FACTOR = 110
 
 
 class ResourceBlockingDocument(QTextDocument):
@@ -302,7 +304,7 @@ class ChatWindow(QMainWindow):
         conversation_contents_layout = QHBoxLayout(self._conversation_contents)
         conversation_contents_layout.setContentsMargins(8, 8, 8, 8)
         self._conversation_column = QWidget()
-        self._conversation_column.setMaximumWidth(900)
+        self._conversation_column.setMaximumWidth(CONTENT_MAX_WIDTH)
         self._conversation_layout = QVBoxLayout(self._conversation_column)
         self._conversation_layout.setContentsMargins(0, 0, 0, 0)
         self._conversation_layout.setSpacing(12)
@@ -314,6 +316,15 @@ class ChatWindow(QMainWindow):
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Message")
         self.input.setFixedHeight(100)
+        self.input.setMaximumWidth(CONTENT_MAX_WIDTH)
+        input_palette = self.input.palette()
+        input_palette.setColor(
+            QPalette.ColorRole.Base,
+            input_palette.color(
+                QPalette.ColorGroup.Active, QPalette.ColorRole.Window
+            ).darker(INPUT_BACKGROUND_DARKENING_FACTOR),
+        )
+        self.input.setPalette(input_palette)
         self.input.installEventFilter(self)
         self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self.send)
@@ -333,15 +344,29 @@ class ChatWindow(QMainWindow):
         capability_row.addWidget(self.capabilities_label)
         capability_row.addWidget(self.capabilities_value, 1)
         capability_row.addWidget(self.refresh_button)
+        self.action_row = QHBoxLayout()
+        self.action_row.addWidget(self.new_conversation_button)
+        self.action_row.addStretch()
+        self.action_row.addWidget(self.waiting_label)
+        self.action_row.addWidget(self.send_button)
+        self.action_row.addWidget(self.stop_waiting_button)
+        self.action_container = QWidget()
+        self.action_container.setMaximumWidth(CONTENT_MAX_WIDTH)
+        self.action_container.setLayout(self.action_row)
+        action_container_row = QHBoxLayout()
+        action_container_row.addStretch()
+        action_container_row.addWidget(self.action_container, 1)
+        action_container_row.addStretch()
+        input_row = QHBoxLayout()
+        input_row.addStretch()
+        input_row.addWidget(self.input, 1)
+        input_row.addStretch()
 
         layout = QVBoxLayout()
         layout.addLayout(capability_row)
         layout.addWidget(self.conversation)
-        layout.addWidget(self.input)
-        layout.addWidget(self.waiting_label)
-        layout.addWidget(self.stop_waiting_button)
-        layout.addWidget(self.new_conversation_button)
-        layout.addWidget(self.send_button)
+        layout.addLayout(input_row)
+        layout.addLayout(action_container_row)
         central = QWidget()
         central.setLayout(layout)
         self.setCentralWidget(central)
@@ -435,7 +460,8 @@ class ChatWindow(QMainWindow):
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.StyledPanel)
         frame.setObjectName(f"chat-message-{kind}")
-        frame.setMaximumWidth({"user": 600, "hac": 720, "status": 480}[kind])
+        maximum_width = {"user": 600, "hac": 720, "status": 480}[kind]
+        frame.setMaximumWidth(maximum_width)
         frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         palette = frame.palette()
         if kind == "user":
@@ -476,6 +502,22 @@ class ChatWindow(QMainWindow):
             body_label.setSizePolicy(body_policy)
         message_layout.addWidget(sender_label)
         message_layout.addWidget(body_label)
+        if kind == "user":
+            horizontal_margins = (
+                message_layout.contentsMargins().left()
+                + message_layout.contentsMargins().right()
+                + 2 * frame.frameWidth()
+            )
+            content_width = max(
+                sender_label.sizeHint().width(),
+                max(
+                    body_label.fontMetrics().horizontalAdvance(line)
+                    for line in message.splitlines() or [""]
+                ),
+            )
+            frame.setMaximumWidth(
+                min(maximum_width, content_width + horizontal_margins)
+            )
 
         row = QWidget()
         row_layout = QHBoxLayout(row)
@@ -495,6 +537,7 @@ class ChatWindow(QMainWindow):
 
     def _set_awaiting(self, awaiting: bool) -> None:
         self.send_button.setEnabled(not awaiting)
+        self.send_button.setVisible(not awaiting)
         self.new_conversation_button.setEnabled(not awaiting)
         self.waiting_label.setVisible(awaiting)
         self.stop_waiting_button.setVisible(awaiting)

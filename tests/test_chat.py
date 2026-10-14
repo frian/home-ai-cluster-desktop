@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
-from PySide6.QtGui import QTextCursor, QTextDocument  # noqa: E402
+from PySide6.QtGui import QPalette, QTextCursor, QTextDocument  # noqa: E402
 from PySide6.QtNetwork import QNetworkProxy, QNetworkReply  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QTextEdit  # noqa: E402
@@ -103,6 +103,154 @@ def window_for(monkeypatch, qt_app, server, timeout=120):
 def send(window, message):
     window.input.setPlainText(message)
     window.send_button.click()
+
+
+def test_compact_chat_action_row_initial_layout(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    qt_app.processEvents()
+
+    assert window.new_conversation_button.isVisible()
+    assert window.new_conversation_button.isEnabled()
+    assert window.send_button.isVisible()
+    assert window.send_button.isEnabled()
+    assert not window.stop_waiting_button.isVisible()
+    assert not window.waiting_label.isVisible()
+    assert window.action_row.indexOf(window.new_conversation_button) >= 0
+    assert window.action_row.indexOf(window.waiting_label) >= 0
+    assert window.action_row.indexOf(window.send_button) >= 0
+    assert window.action_row.indexOf(window.stop_waiting_button) >= 0
+    assert window.new_conversation_button.x() < window.send_button.x()
+    assert window.new_conversation_button.width() < window.centralWidget().width()
+    assert window.send_button.width() < window.centralWidget().width()
+    assert window.send_button.geometry().right() > window.centralWidget().width() // 2
+    window.close()
+
+
+def test_compact_chat_action_row_is_centered_within_content_width(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    window.resize(1600, 900)
+    qt_app.processEvents()
+
+    container = window.action_container
+    central = window.centralWidget()
+    assert container.maximumWidth() == window._conversation_column.maximumWidth()
+    assert container.width() == desktop.CONTENT_MAX_WIDTH
+    assert container.width() < central.width()
+    assert abs(container.geometry().center().x() - central.rect().center().x()) <= 2
+    assert window.new_conversation_button.x() < container.width() // 2
+    assert window.send_button.geometry().right() > container.width() // 2
+    window.close()
+
+
+def test_compact_chat_action_container_expands_at_default_width(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    qt_app.processEvents()
+
+    container = window.action_container
+    assert container.width() < container.maximumWidth()
+    assert container.width() > (
+        window.new_conversation_button.width() + window.send_button.width()
+    )
+    assert window.new_conversation_button.geometry().left() >= 0
+    assert window.send_button.geometry().right() < container.width()
+    window.close()
+
+
+def test_message_input_is_centered_and_palette_contrasted(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    window.resize(1600, 900)
+    qt_app.processEvents()
+
+    central = window.centralWidget()
+    input_palette = window.input.palette()
+    assert window.input.maximumWidth() == desktop.CONTENT_MAX_WIDTH
+    assert window.input.maximumWidth() == window.action_container.maximumWidth()
+    assert window.input.width() == desktop.CONTENT_MAX_WIDTH
+    assert window.input.width() < central.width()
+    assert abs(window.input.geometry().center().x() - central.rect().center().x()) <= 2
+    assert window.input.height() == 100
+    assert input_palette.color(QPalette.ColorRole.Base) == input_palette.color(
+        QPalette.ColorGroup.Active, QPalette.ColorRole.Window
+    ).darker(desktop.INPUT_BACKGROUND_DARKENING_FACTOR)
+    window.close()
+
+
+def test_message_input_expands_without_clipping_at_default_width(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    qt_app.processEvents()
+
+    assert window.input.width() < window.input.maximumWidth()
+    assert window.input.width() > window.input.minimumSizeHint().width()
+    assert window.input.geometry().left() >= 0
+    assert window.input.geometry().right() < window.centralWidget().width()
+    assert window.input.height() == 100
+    window.close()
+
+
+def test_compact_chat_action_row_pending_request(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, _ = server
+    plan["wait"] = True
+
+    send(window, "Pending")
+    until(qt_app, lambda: len(received) == 1 and window._reply is not None)
+
+    assert window.new_conversation_button.isVisible()
+    assert not window.new_conversation_button.isEnabled()
+    assert not window.send_button.isVisible()
+    assert window.stop_waiting_button.isVisible()
+    assert window.stop_waiting_button.isEnabled()
+    assert window.waiting_label.isVisible()
+    assert window.waiting_label.x() < window.stop_waiting_button.x()
+    assert window.waiting_label.x() > window.action_container.width() // 2
+    assert (
+        window.stop_waiting_button.geometry().right() < window.action_container.width()
+    )
+    window.stop_waiting_button.click()
+    window.close()
+
+
+def test_compact_chat_action_row_stop_waiting_restores_normal_controls(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, plan, _ = server
+    plan["wait"] = True
+
+    send(window, "Pending")
+    until(qt_app, lambda: len(received) == 1 and window._reply is not None)
+    window.stop_waiting_button.click()
+
+    assert window.new_conversation_button.isVisible()
+    assert window.new_conversation_button.isEnabled()
+    assert window.send_button.isVisible()
+    assert window.send_button.isEnabled()
+    assert not window.stop_waiting_button.isVisible()
+    assert not window.waiting_label.isVisible()
+    window.close()
+
+
+def test_compact_chat_action_row_completed_request_restores_normal_controls(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, received, _, _ = server
+
+    send(window, "Complete")
+    until(qt_app, lambda: len(received) == 1 and window.send_button.isEnabled())
+
+    assert window.new_conversation_button.isVisible()
+    assert window.new_conversation_button.isEnabled()
+    assert window.send_button.isVisible()
+    assert not window.stop_waiting_button.isVisible()
+    assert not window.waiting_label.isVisible()
+    window.close()
 
 
 def presented_messages(window):
@@ -848,6 +996,92 @@ def test_success_returns_focus_and_scrolls_to_newest_content(
     assert scrollbar.value() == scrollbar.maximum()
     assert not window.waiting_label.isVisible()
     assert window.input.hasFocus()
+    window.close()
+
+
+def test_user_message_bubbles_follow_short_and_medium_content(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    messages = ("Hello!", "What is democracy?")
+    plan["post_bodies"] = [result_body(content="First"), result_body(content="Second")]
+    window.resize(1600, 900)
+
+    for message in messages:
+        send(window, message)
+        until(qt_app, lambda: window.send_button.isEnabled())
+
+    viewport = window.conversation.viewport()
+    column = window._conversation_column
+    user_frames = [
+        frame
+        for frame in window.conversation.findChildren(QFrame)
+        if frame.objectName() == "chat-message-user"
+    ]
+    assert len(user_frames) == len(messages)
+    for frame, message in zip(user_frames, messages, strict=True):
+        body = frame.findChild(QLabel, "chat-message-body")
+        sender = frame.findChild(QLabel, "chat-message-sender")
+        assert body is not None and body.text() == message
+        assert sender is not None and sender.text() == "You"
+        assert frame.width() < 300
+        frame_right = frame.mapTo(viewport, frame.rect().topRight()).x()
+        column_right = column.mapTo(viewport, column.rect().topRight()).x()
+        assert abs(frame_right - column_right) <= 1
+    window.close()
+
+
+def test_long_and_multiline_user_bubbles_wrap_and_preserve_content(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    _, _, plan, _ = server
+    short_message = "Hello!"
+    long_message = "A complete user message should wrap naturally. " * 40
+    multiline_message = "First line\nSecond line\nThird line"
+    plan["post_bodies"] = [result_body(content="Done")] * 3
+
+    for message in (short_message, long_message, multiline_message):
+        send(window, message)
+        until(qt_app, lambda: window.send_button.isEnabled())
+
+    user_frames = [
+        frame
+        for frame in window.conversation.findChildren(QFrame)
+        if frame.objectName() == "chat-message-user"
+    ]
+    short_frame, long_frame, multiline_frame = user_frames
+    long_body = long_frame.findChild(QLabel, "chat-message-body")
+    multiline_body = multiline_frame.findChild(QLabel, "chat-message-body")
+    assert long_body is not None and long_body.text() == long_message
+    assert multiline_body is not None and multiline_body.text() == multiline_message
+    assert short_frame.width() < long_frame.width() <= 600
+    assert long_body.height() > long_body.fontMetrics().height()
+    assert multiline_body.height() >= 3 * multiline_body.fontMetrics().height()
+    window.close()
+
+
+def test_user_bubbles_reflow_inside_the_conversation_column(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    message = "A user message that should reflow as the window changes size. " * 30
+    window._append_conversation("You", message, "user")
+    frame = next(
+        frame
+        for frame in window.conversation.findChildren(QFrame)
+        if frame.objectName() == "chat-message-user"
+    )
+
+    for width, height in ((430, 500), (600, 500), (1100, 800), (430, 500)):
+        window.resize(width, height)
+        qt_app.processEvents()
+        column = window._conversation_column
+        frame_right = frame.mapTo(column, frame.rect().topRight()).x()
+        assert frame.width() <= 600
+        assert frame_right < column.width()
+        assert window.conversation.horizontalScrollBar().maximum() == 0
     window.close()
 
 
