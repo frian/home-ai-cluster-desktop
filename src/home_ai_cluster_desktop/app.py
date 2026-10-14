@@ -37,6 +37,7 @@ CHAT_URL = "http://127.0.0.1:25042/v1/chat"
 CAPABILITIES_URL = "http://127.0.0.1:25042/diagnostics/caller-routable-capabilities"
 CAPABILITY_WAIT_MS = 5000
 CHAT_CONTEXT_LIMIT_BYTES = 65_536
+CONTENT_MAX_WIDTH = 900
 
 
 class ResourceBlockingDocument(QTextDocument):
@@ -302,7 +303,7 @@ class ChatWindow(QMainWindow):
         conversation_contents_layout = QHBoxLayout(self._conversation_contents)
         conversation_contents_layout.setContentsMargins(8, 8, 8, 8)
         self._conversation_column = QWidget()
-        self._conversation_column.setMaximumWidth(900)
+        self._conversation_column.setMaximumWidth(CONTENT_MAX_WIDTH)
         self._conversation_layout = QVBoxLayout(self._conversation_column)
         self._conversation_layout.setContentsMargins(0, 0, 0, 0)
         self._conversation_layout.setSpacing(12)
@@ -339,12 +340,19 @@ class ChatWindow(QMainWindow):
         self.action_row.addWidget(self.waiting_label)
         self.action_row.addWidget(self.send_button)
         self.action_row.addWidget(self.stop_waiting_button)
+        self.action_container = QWidget()
+        self.action_container.setMaximumWidth(CONTENT_MAX_WIDTH)
+        self.action_container.setLayout(self.action_row)
+        action_container_row = QHBoxLayout()
+        action_container_row.addStretch()
+        action_container_row.addWidget(self.action_container, 1)
+        action_container_row.addStretch()
 
         layout = QVBoxLayout()
         layout.addLayout(capability_row)
         layout.addWidget(self.conversation)
         layout.addWidget(self.input)
-        layout.addLayout(self.action_row)
+        layout.addLayout(action_container_row)
         central = QWidget()
         central.setLayout(layout)
         self.setCentralWidget(central)

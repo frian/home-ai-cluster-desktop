@@ -126,6 +126,40 @@ def test_compact_chat_action_row_initial_layout(monkeypatch, qt_app, server):
     window.close()
 
 
+def test_compact_chat_action_row_is_centered_within_content_width(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    window.resize(1600, 900)
+    qt_app.processEvents()
+
+    container = window.action_container
+    central = window.centralWidget()
+    assert container.maximumWidth() == window._conversation_column.maximumWidth()
+    assert container.width() == desktop.CONTENT_MAX_WIDTH
+    assert container.width() < central.width()
+    assert abs(container.geometry().center().x() - central.rect().center().x()) <= 2
+    assert window.new_conversation_button.x() < container.width() // 2
+    assert window.send_button.geometry().right() > container.width() // 2
+    window.close()
+
+
+def test_compact_chat_action_container_expands_at_default_width(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    qt_app.processEvents()
+
+    container = window.action_container
+    assert container.width() < container.maximumWidth()
+    assert container.width() > (
+        window.new_conversation_button.width() + window.send_button.width()
+    )
+    assert window.new_conversation_button.geometry().left() >= 0
+    assert window.send_button.geometry().right() < container.width()
+    window.close()
+
+
 def test_compact_chat_action_row_pending_request(monkeypatch, qt_app, server):
     window = window_for(monkeypatch, qt_app, server)
     _, received, plan, _ = server
@@ -141,6 +175,10 @@ def test_compact_chat_action_row_pending_request(monkeypatch, qt_app, server):
     assert window.stop_waiting_button.isEnabled()
     assert window.waiting_label.isVisible()
     assert window.waiting_label.x() < window.stop_waiting_button.x()
+    assert window.waiting_label.x() > window.action_container.width() // 2
+    assert (
+        window.stop_waiting_button.geometry().right() < window.action_container.width()
+    )
     window.stop_waiting_button.click()
     window.close()
 
