@@ -38,6 +38,7 @@ CAPABILITIES_URL = "http://127.0.0.1:25042/diagnostics/caller-routable-capabilit
 CAPABILITY_WAIT_MS = 5000
 CHAT_CONTEXT_LIMIT_BYTES = 65_536
 CONTENT_MAX_WIDTH = 900
+INPUT_BACKGROUND_DARKENING_FACTOR = 110
 
 
 class ResourceBlockingDocument(QTextDocument):
@@ -315,6 +316,15 @@ class ChatWindow(QMainWindow):
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Message")
         self.input.setFixedHeight(100)
+        self.input.setMaximumWidth(CONTENT_MAX_WIDTH)
+        input_palette = self.input.palette()
+        input_palette.setColor(
+            QPalette.ColorRole.Base,
+            input_palette.color(
+                QPalette.ColorGroup.Active, QPalette.ColorRole.Window
+            ).darker(INPUT_BACKGROUND_DARKENING_FACTOR),
+        )
+        self.input.setPalette(input_palette)
         self.input.installEventFilter(self)
         self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self.send)
@@ -347,11 +357,15 @@ class ChatWindow(QMainWindow):
         action_container_row.addStretch()
         action_container_row.addWidget(self.action_container, 1)
         action_container_row.addStretch()
+        input_row = QHBoxLayout()
+        input_row.addStretch()
+        input_row.addWidget(self.input, 1)
+        input_row.addStretch()
 
         layout = QVBoxLayout()
         layout.addLayout(capability_row)
         layout.addWidget(self.conversation)
-        layout.addWidget(self.input)
+        layout.addLayout(input_row)
         layout.addLayout(action_container_row)
         central = QWidget()
         central.setLayout(layout)

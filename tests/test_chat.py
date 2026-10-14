@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
-from PySide6.QtGui import QTextCursor, QTextDocument  # noqa: E402
+from PySide6.QtGui import QPalette, QTextCursor, QTextDocument  # noqa: E402
 from PySide6.QtNetwork import QNetworkProxy, QNetworkReply  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QTextEdit  # noqa: E402
@@ -157,6 +157,39 @@ def test_compact_chat_action_container_expands_at_default_width(
     )
     assert window.new_conversation_button.geometry().left() >= 0
     assert window.send_button.geometry().right() < container.width()
+    window.close()
+
+
+def test_message_input_is_centered_and_palette_contrasted(monkeypatch, qt_app, server):
+    window = window_for(monkeypatch, qt_app, server)
+    window.resize(1600, 900)
+    qt_app.processEvents()
+
+    central = window.centralWidget()
+    input_palette = window.input.palette()
+    assert window.input.maximumWidth() == desktop.CONTENT_MAX_WIDTH
+    assert window.input.maximumWidth() == window.action_container.maximumWidth()
+    assert window.input.width() == desktop.CONTENT_MAX_WIDTH
+    assert window.input.width() < central.width()
+    assert abs(window.input.geometry().center().x() - central.rect().center().x()) <= 2
+    assert window.input.height() == 100
+    assert input_palette.color(QPalette.ColorRole.Base) == input_palette.color(
+        QPalette.ColorGroup.Active, QPalette.ColorRole.Window
+    ).darker(desktop.INPUT_BACKGROUND_DARKENING_FACTOR)
+    window.close()
+
+
+def test_message_input_expands_without_clipping_at_default_width(
+    monkeypatch, qt_app, server
+):
+    window = window_for(monkeypatch, qt_app, server)
+    qt_app.processEvents()
+
+    assert window.input.width() < window.input.maximumWidth()
+    assert window.input.width() > window.input.minimumSizeHint().width()
+    assert window.input.geometry().left() >= 0
+    assert window.input.geometry().right() < window.centralWidget().width()
+    assert window.input.height() == 100
     window.close()
 
 
